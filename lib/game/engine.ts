@@ -98,6 +98,10 @@ export interface EngineState {
   flowIntensity: number // 0..1
   // Vertical follow line — tracks orb Y position with easing
   followLineY: number // smoothed Y position for the neon follow line
+  // Horizontal trail physics — energy streak that follows orb during flips
+  trailOffsetX: number // current horizontal offset of trail from orb center
+  trailVelocityX: number // horizontal velocity of trail (for follow-through)
+  trailTargetOffsetX: number // target offset trail settles to (0 when idle, increases during flips)
 }
 
 let particleId = 0
@@ -154,6 +158,9 @@ export function createInitialState(mode: GameMode, biomeId: BiomeId = 'cyber_rai
     biome,
     flowIntensity: 0,
     followLineY: THREAD_Y,
+    trailOffsetX: 0,
+    trailVelocityX: 0,
+    trailTargetOffsetX: 0,
   }
 }
 
@@ -245,6 +252,27 @@ export function update(
       state.isFlipping = false
       state.flipProgress = 1
     }
+  }
+
+  // Trail physics — horizontal oscillation during flips
+  // Target offset increases during flip, settles to 0 when idle
+  const maxTrailOffset = 28
+  const flipInfluence = state.flipProgress * (1 - state.flipProgress) * 4 // peaks at 0.5
+  state.trailTargetOffsetX = state.isFlipping ? flipInfluence * maxTrailOffset : 0
+  
+  // Damped spring physics for smooth follow-through
+  const springStiffness = 8.5 // How quickly trail follows target
+  const damping = 0.82 // Oscillation dampening (lower = more bounce)
+  
+  const offsetDiff = state.trailTargetOffsetX - state.trailOffsetX
+  state.trailVelocityX += offsetDiff * springStiffness * dtCapped
+  state.trailVelocityX *= damping
+  state.trailOffsetX += state.trailVelocityX * dtCapped
+  
+  // Kill velocity if very close to target and idle (prevents jitter)
+  if (!state.isFlipping && Math.abs(state.trailOffsetX) < 0.5) {
+    state.trailOffsetX = 0
+    state.trailVelocityX = 0
   }
 
   // Score
@@ -1249,25 +1277,59 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-function drawTrail(
-  ctx: CanvasRenderingContext2D,
-  state: EngineState
-): void {
-  for (let i = state.trailPoints.length - 1; i >= 1; i--) {
-    const p0 = state.trailPoints[i]
-    const p1 = state.trailPoints[i - 1]
-    ctx.strokeStyle = state.orbTrail
-    ctx.globalAlpha = p0.alpha * 0.6
-    ctx.lineWidth = (1 - i / state.trailPoints.length) * ORB_RADIUS * 1.2
-    ctx.shadowBlur = 6
+  function drawTrail(
+    ctx: CanvasRenderingContext2D,
+    state: EngineState
+  ): void {
+    const orbY = getOrbY(state)
+    const trailX = ORB_X + state.trailOffsetX
+    
+    // Horizontal energy streak width based on velocity (stretch effect)
+    const velocityStretch = Math.abs(state.trailVelocityX) * 8
+    const baseWidth = 32
+    const totalWidth = baseWidth + velocityStretch
+    
+    // Draw main trail as horizontal gradient
+    const grad = ctx.createLinearGradient(
+      trailX - totalWidth / 2,
+      orbY,
+      trailX + totalWidth / 2,
+      orbY
+    )
+    
+    // Neon gradient: bright in center, fade to transparent at edges
+    grad.addColorStop(0, hexToRgba(state.orbTrail, 0))
+    grad.addColorStop(0.15, hexToRgba(state.orbTrail, 0.6))
+    grad.addColorStop(0.5, hexToRgba(state.orbTrail, 0.9))
+    grad.addColorStop(0.85, hexToRgba(state.orbTrail, 0.6))
+    grad.addColorStop(1, hexToRgba(state.orbTrail, 0))
+    
+    // Draw trail rectangle with glow
+    ctx.fillStyle = grad
+    ctx.shadowBlur = 14
     ctx.shadowColor = state.orbGlow
-    ctx.beginPath()
-    ctx.moveTo(p0.x, p0.y)
-    ctx.lineTo(p1.x, p1.y)
-    ctx.stroke()
+    ctx.globalAlpha = 0.8
+    ctx.fillRect(
+      trailX - totalWidth / 2,
+      orbY - 8,
+      totalWidth,
+      16
+    )
+    
+    // Inner bright core
+    ctx.fillStyle = hexToRgba(state.orbTrail, 0.7)
+    ctx.shadowBlur = 8
+    ctx.shadowColor = state.orbGlow
+    ctx.globalAlpha = 0.6
+    ctx.fillRect(
+      trailX - baseWidth * 0.4,
+      orbY - 5,
+      baseWidth * 0.8,
+      10
+    )
+    
+    ctx.globalAlpha = 1
   }
-  ctx.globalAlpha = 1
-}
 
 function drawOrb(
   ctx: CanvasRenderingContext2D,

@@ -711,7 +711,7 @@ export function render(
 
   // Orb trail (horizontal neon energy streak)
   const orbY = getOrbY(state)
-  drawTrail(ctx, state, orbY)
+  drawTrail(ctx, state, orbY, t)
 
   // Orb
   drawOrb(ctx, orbY, state, t)
@@ -1278,67 +1278,134 @@ function drawShieldAura(
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
-  orbY: number
+  orbY: number,
+  t: number
 ): void {
-  // Trail origin is at the orb center, extending leftward (behind travel direction)
-  const trailTip = ORB_X + ORB_RADIUS * 0.6  // right edge near orb front
-  const velocityStretch = Math.abs(state.trailVelocityX) * 6
-  const baseLength = 48
-  const trailLength = baseLength + velocityStretch
-  const trailTail = trailTip - trailLength               // left end of streak
-  
-  // Vertical thickness reacts to flip motion (squish effect)
-  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4
-  const halfH = 3 + flipBulge * 5                       // half-height of streak
+  // ── Geometry ─────────────────────────────────────────────────────────────
+  // Trail tip sits just behind the orb's left edge; tail extends further left.
+  const trailTip  = ORB_X - ORB_RADIUS * 0.8
+  const velocityStretch = Math.abs(state.trailVelocityX) * 5
+  const flipStretch     = state.flipProgress * (1 - state.flipProgress) * 4 * 30
+  const baseLength = 60
+  const trailLength = baseLength + velocityStretch + flipStretch
+  const trailTail  = trailTip - trailLength
 
-  // --- Outer wide glow pass ---
-  const glowGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
-  glowGrad.addColorStop(0, hexToRgba(state.orbGlow, 0))
-  glowGrad.addColorStop(0.6, hexToRgba(state.orbGlow, 0.25))
-  glowGrad.addColorStop(1, hexToRgba(state.orbGlow, 0.5))
+  // ── Time-based animation values ───────────────────────────────────────────
+  const ts        = t * 0.001                            // seconds
+  const pulse     = 0.5 + 0.5 * Math.sin(ts * 4.2)      // 0..1, ~4 Hz brightness breathe
+  const shimmerT  = (ts * 0.9) % 1                       // 0..1 shimmer sweep position
+  const ripple    = Math.sin(ts * 7.1) * 0.08            // subtle ±0.08 ripple on alpha
+
+  // ── Vertical thickness (reactive to flip + movement) ─────────────────────
+  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4 // 0..1
+  const halfH     = 2.5 + flipBulge * 6 + velocityStretch * 0.06
+
+  // ── Overall opacity modulated by pulse + ripple ───────────────────────────
+  const baseAlpha   = 0.82 + ripple
+  const glowAlpha   = 0.45 + pulse * 0.18
 
   ctx.save()
-  ctx.shadowBlur = 18
+
+  // ── Layer 1: Soft ambient bloom ───────────────────────────────────────────
+  const bloomGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
+  bloomGrad.addColorStop(0,    hexToRgba(state.orbGlow, 0))
+  bloomGrad.addColorStop(0.55, hexToRgba(state.orbGlow, glowAlpha * 0.3))
+  bloomGrad.addColorStop(1,    hexToRgba(state.orbGlow, glowAlpha * 0.55))
+
+  ctx.shadowBlur  = 22
   ctx.shadowColor = state.orbGlow
   ctx.globalAlpha = 1
 
-  // Trapezoid path: thin at tail, full-height at tip
   ctx.beginPath()
-  ctx.moveTo(trailTail, orbY)                            // tail point
-  ctx.lineTo(trailTip, orbY - halfH * 2.2)              // top-front
-  ctx.lineTo(trailTip, orbY + halfH * 2.2)              // bottom-front
+  ctx.moveTo(trailTail, orbY)
+  ctx.lineTo(trailTip,  orbY - halfH * 3.0)
+  ctx.lineTo(trailTip,  orbY + halfH * 3.0)
   ctx.closePath()
-  ctx.fillStyle = glowGrad
+  ctx.fillStyle = bloomGrad
   ctx.fill()
 
-  // --- Main neon streak ---
-  const streakGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
-  streakGrad.addColorStop(0, hexToRgba(state.orbTrail, 0))
-  streakGrad.addColorStop(0.5, hexToRgba(state.orbTrail, 0.55))
-  streakGrad.addColorStop(1, hexToRgba(state.orbTrail, 0.9))
+  // ── Layer 2: Main neon streak (tapered trapezoid) ─────────────────────────
+  const neonGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
+  neonGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
+  neonGrad.addColorStop(0.35, hexToRgba(state.orbTrail, baseAlpha * 0.45))
+  neonGrad.addColorStop(0.78, hexToRgba(state.orbTrail, baseAlpha * 0.78))
+  neonGrad.addColorStop(1,    hexToRgba(state.orbTrail, baseAlpha))
 
-  ctx.shadowBlur = 10
+  ctx.shadowBlur  = 12
   ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 1
 
   ctx.beginPath()
   ctx.moveTo(trailTail, orbY)
-  ctx.lineTo(trailTip, orbY - halfH)
-  ctx.lineTo(trailTip, orbY + halfH)
+  ctx.lineTo(trailTip,  orbY - halfH)
+  ctx.lineTo(trailTip,  orbY + halfH)
   ctx.closePath()
-  ctx.fillStyle = streakGrad
+  ctx.fillStyle = neonGrad
   ctx.fill()
 
-  // --- Bright inner core line ---
-  ctx.shadowBlur = 6
+  // ── Layer 3: Shimmer sweep — a bright band sliding tail → tip ─────────────
+  const shimX0 = trailTail + trailLength * Math.max(0, shimmerT - 0.18)
+  const shimX1 = trailTail + trailLength * shimmerT
+  if (shimX1 > trailTail) {
+    const shimGrad = ctx.createLinearGradient(shimX0, orbY, shimX1, orbY)
+    shimGrad.addColorStop(0, hexToRgba(state.orbTrail, 0))
+    shimGrad.addColorStop(0.5, hexToRgba(state.orbTrail, 0.55 + pulse * 0.2))
+    shimGrad.addColorStop(1, hexToRgba(state.orbTrail, 0))
+
+    ctx.shadowBlur  = 8
+    ctx.shadowColor = state.orbGlow
+    ctx.globalAlpha = 0.65
+
+    // Clip shimmer to the trail trapezoid shape
+    ctx.beginPath()
+    ctx.moveTo(trailTail, orbY)
+    ctx.lineTo(trailTip,  orbY - halfH)
+    ctx.lineTo(trailTip,  orbY + halfH)
+    ctx.closePath()
+    ctx.save()
+    ctx.clip()
+
+    ctx.fillStyle = shimGrad
+    ctx.fillRect(shimX0, orbY - halfH, shimX1 - shimX0, halfH * 2)
+
+    ctx.restore()
+  }
+
+  // ── Layer 4: Bright core spine line ──────────────────────────────────────
+  const coreAlpha = 0.75 + pulse * 0.2
+  const coreGrad  = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
+  coreGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
+  coreGrad.addColorStop(0.45, hexToRgba(state.orbTrail, coreAlpha * 0.6))
+  coreGrad.addColorStop(1,    hexToRgba(state.orbTrail, coreAlpha))
+
+  ctx.shadowBlur  = 6
   ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 0.8
-  ctx.strokeStyle = hexToRgba(state.orbTrail, 0.9)
-  ctx.lineWidth = 1
-  ctx.lineCap = 'round'
+  ctx.globalAlpha = 1
+  ctx.strokeStyle = coreGrad
+  ctx.lineWidth   = 1.2
+  ctx.lineCap     = 'round'
   ctx.beginPath()
   ctx.moveTo(trailTail, orbY)
-  ctx.lineTo(trailTip, orbY)
+  ctx.lineTo(trailTip,  orbY)
   ctx.stroke()
+
+  // ── Layer 5: Hot white tip spark — anchored at orb edge ───────────────────
+  const sparkAlpha = 0.6 + pulse * 0.35
+  const sparkGrad  = ctx.createRadialGradient(
+    trailTip, orbY, 0,
+    trailTip, orbY, halfH * 2.8
+  )
+  sparkGrad.addColorStop(0,   hexToRgba('#ffffff', sparkAlpha))
+  sparkGrad.addColorStop(0.4, hexToRgba(state.orbTrail, sparkAlpha * 0.7))
+  sparkGrad.addColorStop(1,   hexToRgba(state.orbGlow,  0))
+
+  ctx.shadowBlur  = 14
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 1
+  ctx.fillStyle   = sparkGrad
+  ctx.beginPath()
+  ctx.arc(trailTip, orbY, halfH * 2.8, 0, Math.PI * 2)
+  ctx.fill()
 
   ctx.restore()
 }

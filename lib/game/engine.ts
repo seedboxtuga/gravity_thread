@@ -709,12 +709,9 @@ export function render(
     else drawPhaseCore(ctx, pu, t, state.biome)
   }
 
-  // Orb trail
-  drawTrail(ctx, state)
-
-  // Vertical follow line
+  // Orb trail (horizontal neon energy streak)
   const orbY = getOrbY(state)
-  drawFollowLine(ctx, state, orbY)
+  drawTrail(ctx, state, orbY)
 
   // Orb
   drawOrb(ctx, orbY, state, t)
@@ -1278,59 +1275,73 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-  function drawTrail(
-    ctx: CanvasRenderingContext2D,
-    state: EngineState
-  ): void {
-    const orbY = getOrbY(state)
-    const trailX = ORB_X + state.trailOffsetX
-    
-    // Horizontal energy streak width based on velocity (stretch effect)
-    const velocityStretch = Math.abs(state.trailVelocityX) * 8
-    const baseWidth = 32
-    const totalWidth = baseWidth + velocityStretch
-    
-    // Draw main trail as horizontal gradient
-    const grad = ctx.createLinearGradient(
-      trailX - totalWidth / 2,
-      orbY,
-      trailX + totalWidth / 2,
-      orbY
-    )
-    
-    // Neon gradient: bright in center, fade to transparent at edges
-    grad.addColorStop(0, hexToRgba(state.orbTrail, 0))
-    grad.addColorStop(0.15, hexToRgba(state.orbTrail, 0.6))
-    grad.addColorStop(0.5, hexToRgba(state.orbTrail, 0.9))
-    grad.addColorStop(0.85, hexToRgba(state.orbTrail, 0.6))
-    grad.addColorStop(1, hexToRgba(state.orbTrail, 0))
-    
-    // Draw trail rectangle with glow
-    ctx.fillStyle = grad
-    ctx.shadowBlur = 14
-    ctx.shadowColor = state.orbGlow
-    ctx.globalAlpha = 0.8
-    ctx.fillRect(
-      trailX - totalWidth / 2,
-      orbY - 8,
-      totalWidth,
-      16
-    )
-    
-    // Inner bright core
-    ctx.fillStyle = hexToRgba(state.orbTrail, 0.7)
-    ctx.shadowBlur = 8
-    ctx.shadowColor = state.orbGlow
-    ctx.globalAlpha = 0.6
-    ctx.fillRect(
-      trailX - baseWidth * 0.4,
-      orbY - 5,
-      baseWidth * 0.8,
-      10
-    )
-    
-    ctx.globalAlpha = 1
-  }
+function drawTrail(
+  ctx: CanvasRenderingContext2D,
+  state: EngineState,
+  orbY: number
+): void {
+  // Trail origin is at the orb center, extending leftward (behind travel direction)
+  const trailTip = ORB_X + ORB_RADIUS * 0.6  // right edge near orb front
+  const velocityStretch = Math.abs(state.trailVelocityX) * 6
+  const baseLength = 48
+  const trailLength = baseLength + velocityStretch
+  const trailTail = trailTip - trailLength               // left end of streak
+  
+  // Vertical thickness reacts to flip motion (squish effect)
+  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4
+  const halfH = 3 + flipBulge * 5                       // half-height of streak
+
+  // --- Outer wide glow pass ---
+  const glowGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
+  glowGrad.addColorStop(0, hexToRgba(state.orbGlow, 0))
+  glowGrad.addColorStop(0.6, hexToRgba(state.orbGlow, 0.25))
+  glowGrad.addColorStop(1, hexToRgba(state.orbGlow, 0.5))
+
+  ctx.save()
+  ctx.shadowBlur = 18
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 1
+
+  // Trapezoid path: thin at tail, full-height at tip
+  ctx.beginPath()
+  ctx.moveTo(trailTail, orbY)                            // tail point
+  ctx.lineTo(trailTip, orbY - halfH * 2.2)              // top-front
+  ctx.lineTo(trailTip, orbY + halfH * 2.2)              // bottom-front
+  ctx.closePath()
+  ctx.fillStyle = glowGrad
+  ctx.fill()
+
+  // --- Main neon streak ---
+  const streakGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
+  streakGrad.addColorStop(0, hexToRgba(state.orbTrail, 0))
+  streakGrad.addColorStop(0.5, hexToRgba(state.orbTrail, 0.55))
+  streakGrad.addColorStop(1, hexToRgba(state.orbTrail, 0.9))
+
+  ctx.shadowBlur = 10
+  ctx.shadowColor = state.orbGlow
+
+  ctx.beginPath()
+  ctx.moveTo(trailTail, orbY)
+  ctx.lineTo(trailTip, orbY - halfH)
+  ctx.lineTo(trailTip, orbY + halfH)
+  ctx.closePath()
+  ctx.fillStyle = streakGrad
+  ctx.fill()
+
+  // --- Bright inner core line ---
+  ctx.shadowBlur = 6
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 0.8
+  ctx.strokeStyle = hexToRgba(state.orbTrail, 0.9)
+  ctx.lineWidth = 1
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(trailTail, orbY)
+  ctx.lineTo(trailTip, orbY)
+  ctx.stroke()
+
+  ctx.restore()
+}
 
 function drawOrb(
   ctx: CanvasRenderingContext2D,
@@ -1643,43 +1654,5 @@ function hexToRgba(hex: string, alpha: number): string {
   return hex
 }
 
-// Draws the vertical neon follow line that trails behind the orb's vertical movement
-function drawFollowLine(ctx: CanvasRenderingContext2D, state: EngineState, orbY: number): void {
-  const currentY = orbY
-  const smoothing = 0.12 // Easing factor for smooth follow with elasticity
-  
-  // Update follow line position with easing (creates lag/trail effect)
-  state.followLineY += (currentY - state.followLineY) * smoothing
-  
-  // Draw vertical neon line from top thread to bottom thread
-  const topY = THREAD_Y - ORB_OFFSET_Y
-  const bottomY = THREAD_Y + ORB_OFFSET_Y
-  
-  // Main line - glowing neon effect
-  ctx.strokeStyle = state.orbGlow
-  ctx.lineWidth = 2
-  ctx.lineCap = 'round'
-  ctx.shadowBlur = 20
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 0.6
-  
-  ctx.beginPath()
-  ctx.moveTo(ORB_X, topY)
-  ctx.lineTo(ORB_X, bottomY)
-  ctx.stroke()
-  
-  // Inner bright core line
-  ctx.strokeStyle = '#ffffff'
-  ctx.lineWidth = 0.8
-  ctx.shadowBlur = 8
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 0.4
-  
-  ctx.beginPath()
-  ctx.moveTo(ORB_X, topY)
-  ctx.lineTo(ORB_X, bottomY)
-  ctx.stroke()
-  
-  ctx.globalAlpha = 1
-}
+
 

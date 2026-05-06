@@ -98,10 +98,6 @@ export interface EngineState {
   flowIntensity: number // 0..1
   // Vertical follow line — tracks orb Y position with easing
   followLineY: number // smoothed Y position for the neon follow line
-  // Horizontal trail physics — energy streak that follows orb during flips
-  trailOffsetX: number // current horizontal offset of trail from orb center
-  trailVelocityX: number // horizontal velocity of trail (for follow-through)
-  trailTargetOffsetX: number // target offset trail settles to (0 when idle, increases during flips)
 }
 
 let particleId = 0
@@ -158,9 +154,6 @@ export function createInitialState(mode: GameMode, biomeId: BiomeId = 'cyber_rai
     biome,
     flowIntensity: 0,
     followLineY: THREAD_Y,
-    trailOffsetX: 0,
-    trailVelocityX: 0,
-    trailTargetOffsetX: 0,
   }
 }
 
@@ -252,28 +245,6 @@ export function update(
       state.isFlipping = false
       state.flipProgress = 1
     }
-  }
-
-  // Trail physics — horizontal oscillation during flips
-  // Target offset increases during flip, settles to 0 when idle
-  const maxTrailOffset = 28
-  // Use flipProgress directly (0 when no flip, peaks at 0.5, returns to 0 after)
-  const flipInfluence = state.flipProgress * (1 - state.flipProgress) * 4 // peaks at 0.5
-  state.trailTargetOffsetX = flipInfluence > 0.05 ? flipInfluence * maxTrailOffset : 0
-  
-  // Damped spring physics for smooth follow-through
-  const springStiffness = 8.5 // How quickly trail follows target
-  const damping = 0.82 // Oscillation dampening (lower = more bounce)
-  
-  const offsetDiff = state.trailTargetOffsetX - state.trailOffsetX
-  state.trailVelocityX += offsetDiff * springStiffness * dtCapped
-  state.trailVelocityX *= damping
-  state.trailOffsetX += state.trailVelocityX * dtCapped
-  
-  // Kill velocity if very close to target and idle (prevents jitter)
-  if (state.flipProgress < 0.01 && Math.abs(state.trailOffsetX) < 0.5) {
-    state.trailOffsetX = 0
-    state.trailVelocityX = 0
   }
 
   // Score
@@ -463,10 +434,10 @@ export function update(
   const targetFlow = Math.min(state.stats.streak / 15, 1)  // Reduced from 20 for faster escalation
   state.flowIntensity += (targetFlow - state.flowIntensity) * dtCapped * 2.5  // Increased response time
 
-  // Trail
+  // Trail ghost positions — captured every frame, fade over time
   state.trailPoints.unshift({ x: ORB_X, y: orbY, alpha: 1 })
-  if (state.trailPoints.length > 22) state.trailPoints.pop()
-  for (const p of state.trailPoints) p.alpha *= 0.84
+  if (state.trailPoints.length > 16) state.trailPoints.pop()
+  for (const p of state.trailPoints) p.alpha *= 0.78
 
   // Particles
   for (const p of state.particles) {
@@ -1275,137 +1246,51 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
+// ── Ghost-chain trail ──────────────────────────────────────────────────────
+// Draws decaying soft circles at each recorded orb position.
+// Ghost circles shrink and fade as they age, creating an organic motion wake
+// that is always attached to the orb, reads in any direction, and never clutters.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
   orbY: number,
   t: number
 ): void {
-  // ── Geometry ─────────────────────────────────────────────────────────────
-  // Trail tip sits just behind the orb's left edge; tail extends further left.
-  const trailTip  = ORB_X - ORB_RADIUS * 0.8
-  const velocityStretch = Math.abs(state.trailVelocityX) * 5
-  const flipStretch     = state.flipProgress * (1 - state.flipProgress) * 4 * 30
-  const baseLength = 60
-  const trailLength = baseLength + velocityStretch + flipStretch
-  const trailTail  = trailTip - trailLength
+  const points = state.trailPoints
+  if (points.length < 2) return
 
-  // ── Time-based animation values ───────────────────────────────────────────
-  const ts        = t * 0.001                            // seconds
-  const pulse     = 0.5 + 0.5 * Math.sin(ts * 4.2)      // 0..1, ~4 Hz brightness breathe
-  const shimmerT  = (ts * 0.9) % 1                       // 0..1 shimmer sweep position
-  const ripple    = Math.sin(ts * 7.1) * 0.08            // subtle ±0.08 ripple on alpha
-
-  // ── Vertical thickness (reactive to flip + movement) ─────────────────────
-  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4 // 0..1
-  const halfH     = 2.5 + flipBulge * 6 + velocityStretch * 0.06
-
-  // ── Overall opacity modulated by pulse + ripple ───────────────────────────
-  const baseAlpha   = 0.82 + ripple
-  const glowAlpha   = 0.45 + pulse * 0.18
+  const ts = t * 0.001
+  // Subtle breathe — just enough to feel alive, not distracting
+  const breathe = 0.88 + 0.12 * Math.sin(ts * 3.8)
 
   ctx.save()
-
-  // ── Layer 1: Soft ambient bloom ───────────────────────────────────────────
-  const bloomGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
-  bloomGrad.addColorStop(0,    hexToRgba(state.orbGlow, 0))
-  bloomGrad.addColorStop(0.55, hexToRgba(state.orbGlow, glowAlpha * 0.3))
-  bloomGrad.addColorStop(1,    hexToRgba(state.orbGlow, glowAlpha * 0.55))
-
-  ctx.shadowBlur  = 22
   ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 1
 
-  ctx.beginPath()
-  ctx.moveTo(trailTail, orbY)
-  ctx.lineTo(trailTip,  orbY - halfH * 3.0)
-  ctx.lineTo(trailTip,  orbY + halfH * 3.0)
-  ctx.closePath()
-  ctx.fillStyle = bloomGrad
-  ctx.fill()
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i]
+    if (p.alpha < 0.01) continue
 
-  // ── Layer 2: Main neon streak (tapered trapezoid) ─────────────────────────
-  const neonGrad = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
-  neonGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
-  neonGrad.addColorStop(0.35, hexToRgba(state.orbTrail, baseAlpha * 0.45))
-  neonGrad.addColorStop(0.78, hexToRgba(state.orbTrail, baseAlpha * 0.78))
-  neonGrad.addColorStop(1,    hexToRgba(state.orbTrail, baseAlpha))
+    // Ghost shrinks and fades with age
+    const age    = i / points.length           // 0 (fresh) → 1 (oldest)
+    const radius = ORB_RADIUS * (1 - age * 0.72) * breathe
+    const alpha  = p.alpha * (1 - age * 0.55) * breathe
 
-  ctx.shadowBlur  = 12
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 1
+    // Radial gradient: bright core → transparent edge
+    const grad = ctx.createRadialGradient(
+      ORB_X, p.y, 0,
+      ORB_X, p.y, radius
+    )
+    grad.addColorStop(0,   hexToRgba(state.orbColor,  alpha * 0.55))
+    grad.addColorStop(0.4, hexToRgba(state.orbTrail,  alpha * 0.7))
+    grad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
 
-  ctx.beginPath()
-  ctx.moveTo(trailTail, orbY)
-  ctx.lineTo(trailTip,  orbY - halfH)
-  ctx.lineTo(trailTip,  orbY + halfH)
-  ctx.closePath()
-  ctx.fillStyle = neonGrad
-  ctx.fill()
-
-  // ── Layer 3: Shimmer sweep — a bright band sliding tail → tip ─────────────
-  const shimX0 = trailTail + trailLength * Math.max(0, shimmerT - 0.18)
-  const shimX1 = trailTail + trailLength * shimmerT
-  if (shimX1 > trailTail) {
-    const shimGrad = ctx.createLinearGradient(shimX0, orbY, shimX1, orbY)
-    shimGrad.addColorStop(0, hexToRgba(state.orbTrail, 0))
-    shimGrad.addColorStop(0.5, hexToRgba(state.orbTrail, 0.55 + pulse * 0.2))
-    shimGrad.addColorStop(1, hexToRgba(state.orbTrail, 0))
-
-    ctx.shadowBlur  = 8
-    ctx.shadowColor = state.orbGlow
-    ctx.globalAlpha = 0.65
-
-    // Clip shimmer to the trail trapezoid shape
+    ctx.shadowBlur  = 10 * (1 - age * 0.6)
+    ctx.globalAlpha = 1
+    ctx.fillStyle   = grad
     ctx.beginPath()
-    ctx.moveTo(trailTail, orbY)
-    ctx.lineTo(trailTip,  orbY - halfH)
-    ctx.lineTo(trailTip,  orbY + halfH)
-    ctx.closePath()
-    ctx.save()
-    ctx.clip()
-
-    ctx.fillStyle = shimGrad
-    ctx.fillRect(shimX0, orbY - halfH, shimX1 - shimX0, halfH * 2)
-
-    ctx.restore()
+    ctx.arc(ORB_X, p.y, radius, 0, Math.PI * 2)
+    ctx.fill()
   }
-
-  // ── Layer 4: Bright core spine line ──────────────────────────────────────
-  const coreAlpha = 0.75 + pulse * 0.2
-  const coreGrad  = ctx.createLinearGradient(trailTail, orbY, trailTip, orbY)
-  coreGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
-  coreGrad.addColorStop(0.45, hexToRgba(state.orbTrail, coreAlpha * 0.6))
-  coreGrad.addColorStop(1,    hexToRgba(state.orbTrail, coreAlpha))
-
-  ctx.shadowBlur  = 6
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 1
-  ctx.strokeStyle = coreGrad
-  ctx.lineWidth   = 1.2
-  ctx.lineCap     = 'round'
-  ctx.beginPath()
-  ctx.moveTo(trailTail, orbY)
-  ctx.lineTo(trailTip,  orbY)
-  ctx.stroke()
-
-  // ── Layer 5: Hot white tip spark — anchored at orb edge ───────────────────
-  const sparkAlpha = 0.6 + pulse * 0.35
-  const sparkGrad  = ctx.createRadialGradient(
-    trailTip, orbY, 0,
-    trailTip, orbY, halfH * 2.8
-  )
-  sparkGrad.addColorStop(0,   hexToRgba('#ffffff', sparkAlpha))
-  sparkGrad.addColorStop(0.4, hexToRgba(state.orbTrail, sparkAlpha * 0.7))
-  sparkGrad.addColorStop(1,   hexToRgba(state.orbGlow,  0))
-
-  ctx.shadowBlur  = 14
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 1
-  ctx.fillStyle   = sparkGrad
-  ctx.beginPath()
-  ctx.arc(trailTip, orbY, halfH * 2.8, 0, Math.PI * 2)
-  ctx.fill()
 
   ctx.restore()
 }

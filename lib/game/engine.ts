@@ -257,8 +257,9 @@ export function update(
   // Trail physics — horizontal oscillation during flips
   // Target offset increases during flip, settles to 0 when idle
   const maxTrailOffset = 28
+  // Use flipProgress directly (0 when no flip, peaks at 0.5, returns to 0 after)
   const flipInfluence = state.flipProgress * (1 - state.flipProgress) * 4 // peaks at 0.5
-  state.trailTargetOffsetX = state.isFlipping ? flipInfluence * maxTrailOffset : 0
+  state.trailTargetOffsetX = flipInfluence > 0.05 ? flipInfluence * maxTrailOffset : 0
   
   // Damped spring physics for smooth follow-through
   const springStiffness = 8.5 // How quickly trail follows target
@@ -270,7 +271,7 @@ export function update(
   state.trailOffsetX += state.trailVelocityX * dtCapped
   
   // Kill velocity if very close to target and idle (prevents jitter)
-  if (!state.isFlipping && Math.abs(state.trailOffsetX) < 0.5) {
+  if (state.flipProgress < 0.01 && Math.abs(state.trailOffsetX) < 0.5) {
     state.trailOffsetX = 0
     state.trailVelocityX = 0
   }

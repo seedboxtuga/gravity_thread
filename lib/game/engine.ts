@@ -1246,51 +1246,124 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-// ── Ghost-chain trail ──────────────────────────────────────────────────────
-// Draws decaying soft circles at each recorded orb position.
-// Ghost circles shrink and fade as they age, creating an organic motion wake
-// that is always attached to the orb, reads in any direction, and never clutters.
+// ── Plasma wake trail ──────────────────────────────────────────────────────
+// Pure energy emitted by the orb — no position history.
+// Three elements, all anchored at the orb left edge, extending leftward:
+//   1. Ambient bloom  — wide radial halo smeared into a horizontal oval
+//   2. Core streak    — tapered gradient fill with a subtly curved spine
+//   3. Arc wings      — two short elliptical arc fragments above/below the
+//                       streak that echo the orbit-ring design language
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
   orbY: number,
   t: number
 ): void {
-  const points = state.trailPoints
-  if (points.length < 2) return
+  // Anchor: left side of the orb
+  const tipX   = ORB_X - ORB_RADIUS          // where the energy leaves the orb
+  const tailX  = tipX - 58                   // how far left the wake extends
 
-  const ts = t * 0.001
-  // Subtle breathe — just enough to feel alive, not distracting
-  const breathe = 0.88 + 0.12 * Math.sin(ts * 3.8)
+  // Gentle time-based undulation
+  const wave   = Math.sin(t * 2.6) * 1.8    // ±1.8 px vertical drift of core
+  const pulse  = 0.5 + 0.5 * Math.sin(t * 3.4)  // 0..1 brightness breathe
+
+  // Core streak half-height — reactive to flip (squish-and-stretch)
+  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4
+  const halfH  = 2.8 + flipBulge * 4.5
 
   ctx.save()
+
+  // ── 1. Ambient bloom ─────────────────────────────────────────────────────
+  // Wide radial gradient stretched into a horizontal oval via scale
+  const bloomAlpha = 0.28 + pulse * 0.10
+  const bloom = ctx.createRadialGradient(tipX, orbY, 0, tipX, orbY, 1)
+  bloom.addColorStop(0, hexToRgba(state.orbGlow, bloomAlpha))
+  bloom.addColorStop(1, hexToRgba(state.orbGlow, 0))
+
+  ctx.save()
+  ctx.translate(tipX, orbY)
+  ctx.scale((tipX - tailX) / 14, 1)      // stretch radial into a long oval
+  ctx.shadowBlur  = 20
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 1
+  ctx.fillStyle   = bloom
+  ctx.beginPath()
+  ctx.arc(0, 0, 14, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+
+  // ── 2. Core streak ───────────────────────────────────────────────────────
+  // Tapered trapezoid: pointed at tail, full halfH at tip, spine follows wave
+  const streakGrad = ctx.createLinearGradient(tailX, orbY, tipX, orbY)
+  streakGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
+  streakGrad.addColorStop(0.42, hexToRgba(state.orbTrail, 0.38 + pulse * 0.12))
+  streakGrad.addColorStop(0.80, hexToRgba(state.orbTrail, 0.72))
+  streakGrad.addColorStop(1,    hexToRgba(state.orbColor,  0.88))
+
+  ctx.shadowBlur  = 10
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 1
+
+  // Curved spine via quadratic bezier: control point offset by wave
+  const cpX = tailX + (tipX - tailX) * 0.55
+  ctx.beginPath()
+  ctx.moveTo(tailX, orbY)
+  ctx.quadraticCurveTo(cpX, orbY + wave - halfH, tipX, orbY - halfH)
+  ctx.lineTo(tipX, orbY + halfH)
+  ctx.quadraticCurveTo(cpX, orbY + wave + halfH, tailX, orbY)
+  ctx.closePath()
+  ctx.fillStyle = streakGrad
+  ctx.fill()
+
+  // Bright spine centre line
+  ctx.strokeStyle = hexToRgba(state.orbColor, 0.55 + pulse * 0.25)
+  ctx.lineWidth   = 0.9
+  ctx.lineCap     = 'round'
+  ctx.shadowBlur  = 6
+  ctx.beginPath()
+  ctx.moveTo(tailX, orbY)
+  ctx.quadraticCurveTo(cpX, orbY + wave, tipX, orbY)
+  ctx.stroke()
+
+  // ── 3. Arc wings ─────────────────────────────────────────────────────────
+  // Two short elliptical arcs that mirror the orbit-ring design language.
+  // They splay above and below the streak, fading toward the tail.
+  const arcR     = ORB_RADIUS + 4            // matches drawOrbRing's ringR
+  const arcAlpha = 0.32 + pulse * 0.14
+  const wingLen  = 44                        // px the arcs span horizontally
+
+  ctx.strokeStyle = hexToRgba(state.orbGlow, arcAlpha)
+  ctx.lineWidth   = 1.1
+  ctx.shadowBlur  = 8
   ctx.shadowColor = state.orbGlow
 
-  for (let i = 1; i < points.length; i++) {
-    const p = points[i]
-    if (p.alpha < 0.01) continue
+  // Upper arc wing
+  ctx.save()
+  ctx.translate(tipX - wingLen * 0.5, orbY)
+  ctx.scale(wingLen / (arcR * 2), 1)
+  const gradUpper = ctx.createLinearGradient(-arcR, 0, arcR, 0)
+  gradUpper.addColorStop(0,   hexToRgba(state.orbGlow, 0))
+  gradUpper.addColorStop(0.5, hexToRgba(state.orbGlow, arcAlpha))
+  gradUpper.addColorStop(1,   hexToRgba(state.orbGlow, arcAlpha * 0.6))
+  ctx.strokeStyle = gradUpper
+  ctx.beginPath()
+  ctx.ellipse(0, 0, arcR, arcR * 0.36, 0, Math.PI, Math.PI * 2)  // upper half
+  ctx.stroke()
+  ctx.restore()
 
-    // Ghost shrinks and fades with age
-    const age    = i / points.length           // 0 (fresh) → 1 (oldest)
-    const radius = ORB_RADIUS * (1 - age * 0.72) * breathe
-    const alpha  = p.alpha * (1 - age * 0.55) * breathe
-
-    // Radial gradient: bright core → transparent edge
-    const grad = ctx.createRadialGradient(
-      ORB_X, p.y, 0,
-      ORB_X, p.y, radius
-    )
-    grad.addColorStop(0,   hexToRgba(state.orbColor,  alpha * 0.55))
-    grad.addColorStop(0.4, hexToRgba(state.orbTrail,  alpha * 0.7))
-    grad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
-
-    ctx.shadowBlur  = 10 * (1 - age * 0.6)
-    ctx.globalAlpha = 1
-    ctx.fillStyle   = grad
-    ctx.beginPath()
-    ctx.arc(ORB_X, p.y, radius, 0, Math.PI * 2)
-    ctx.fill()
-  }
+  // Lower arc wing (mirrored)
+  ctx.save()
+  ctx.translate(tipX - wingLen * 0.5, orbY)
+  ctx.scale(wingLen / (arcR * 2), 1)
+  const gradLower = ctx.createLinearGradient(-arcR, 0, arcR, 0)
+  gradLower.addColorStop(0,   hexToRgba(state.orbGlow, 0))
+  gradLower.addColorStop(0.5, hexToRgba(state.orbGlow, arcAlpha))
+  gradLower.addColorStop(1,   hexToRgba(state.orbGlow, arcAlpha * 0.6))
+  ctx.strokeStyle = gradLower
+  ctx.beginPath()
+  ctx.ellipse(0, 0, arcR, arcR * 0.36, 0, 0, Math.PI)            // lower half
+  ctx.stroke()
+  ctx.restore()
 
   ctx.restore()
 }

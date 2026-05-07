@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { GameMode, PlayerProfile, DailyChallenge } from '@/lib/game/types'
 import type { BiomeId } from '@/lib/game/biomes'
@@ -38,12 +38,7 @@ export default function HomeScreen({
   onStats,
   onBiomeSelect,
 }: HomeScreenProps) {
-  // Initialize with the SSR-safe default so server and client render identically,
-  // then sync to the real persisted value (from localStorage via profile) after mount.
-  const [selectedMode, setSelectedMode] = useState<GameMode>('endless')
-  useEffect(() => {
-    setSelectedMode(profile.selectedMode)
-  }, [profile.selectedMode])
+  const [selectedMode, setSelectedMode] = useState<GameMode>(profile.selectedMode)
   const selectedBiome = profile.selectedBiome ?? 'cyber_rail'
   const [biomeOpen, setBiomeOpen] = useState(false)
 

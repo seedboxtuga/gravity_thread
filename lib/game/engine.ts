@@ -1246,124 +1246,128 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-// ── Plasma wake trail ──────────────────────────────────────────────────────
-// Pure energy emitted by the orb — no position history.
-// Three elements, all anchored at the orb left edge, extending leftward:
-//   1. Ambient bloom  — wide radial halo smeared into a horizontal oval
-//   2. Core streak    — tapered gradient fill with a subtly curved spine
-//   3. Arc wings      — two short elliptical arc fragments above/below the
-//                       streak that echo the orbit-ring design language
+// ── Orbit wake trail ───────────────────────────────────────────────────────
+// Designed energy effect — not motion history. Two elements:
+//
+//   1. Comet tail  — a teardrop-shaped filled path anchored at the orb's left
+//                    pole, tapering to a point leftward. Hot at the tip, fully
+//                    transparent at the tail. Width pulses slightly with time.
+//
+//   2. Echo arcs   — two to three short arc strokes that repeat the tilted
+//                    orbit ellipse from drawOrbRing, offset leftward at
+//                    increasing distances. Each echoes the ring at a lower
+//                    opacity — like the orb's orbital field dissipating.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
   orbY: number,
   t: number
 ): void {
-  // Anchor: left side of the orb
-  const tipX   = ORB_X - ORB_RADIUS          // where the energy leaves the orb
-  const tailX  = tipX - 58                   // how far left the wake extends
+  // ── Shared geometry ───────────────────────────────────────────────────────
+  const tipX   = ORB_X - ORB_RADIUS        // left pole of the orb — trail origin
+  const tailX  = tipX - 54                 // where the comet tail ends
 
-  // Gentle time-based undulation
-  const wave   = Math.sin(t * 2.6) * 1.8    // ±1.8 px vertical drift of core
-  const pulse  = 0.5 + 0.5 * Math.sin(t * 3.4)  // 0..1 brightness breathe
-
-  // Core streak half-height — reactive to flip (squish-and-stretch)
-  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4
-  const halfH  = 2.8 + flipBulge * 4.5
+  const pulse  = 0.5 + 0.5 * Math.sin(t * 2.8)   // 0..1, slow breathe
+  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4  // 0..1
 
   ctx.save()
-
-  // ── 1. Ambient bloom ─────────────────────────────────────────────────────
-  // Wide radial gradient stretched into a horizontal oval via scale
-  const bloomAlpha = 0.28 + pulse * 0.10
-  const bloom = ctx.createRadialGradient(tipX, orbY, 0, tipX, orbY, 1)
-  bloom.addColorStop(0, hexToRgba(state.orbGlow, bloomAlpha))
-  bloom.addColorStop(1, hexToRgba(state.orbGlow, 0))
-
-  ctx.save()
-  ctx.translate(tipX, orbY)
-  ctx.scale((tipX - tailX) / 14, 1)      // stretch radial into a long oval
-  ctx.shadowBlur  = 20
   ctx.shadowColor = state.orbGlow
+
+  // ── 1. Comet tail ─────────────────────────────────────────────────────────
+  // Teardrop: starts at tipX with a half-height that pulses slightly,
+  // curves back to a sharp point at tailX. Entirely horizontal silhouette.
+  const halfH = 3.5 + pulse * 1.2 + flipBulge * 3.5  // max ~8 px at flip peak
+
+  // Outer soft glow pass (wider, very transparent)
+  const glowGrad = ctx.createLinearGradient(tailX, orbY, tipX, orbY)
+  glowGrad.addColorStop(0,   hexToRgba(state.orbGlow, 0))
+  glowGrad.addColorStop(0.7, hexToRgba(state.orbGlow, 0.12 + pulse * 0.08))
+  glowGrad.addColorStop(1,   hexToRgba(state.orbGlow, 0.30))
+
+  ctx.shadowBlur  = 16
   ctx.globalAlpha = 1
-  ctx.fillStyle   = bloom
-  ctx.beginPath()
-  ctx.arc(0, 0, 14, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.restore()
-
-  // ── 2. Core streak ───────────────────────────────────────────────────────
-  // Tapered trapezoid: pointed at tail, full halfH at tip, spine follows wave
-  const streakGrad = ctx.createLinearGradient(tailX, orbY, tipX, orbY)
-  streakGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
-  streakGrad.addColorStop(0.42, hexToRgba(state.orbTrail, 0.38 + pulse * 0.12))
-  streakGrad.addColorStop(0.80, hexToRgba(state.orbTrail, 0.72))
-  streakGrad.addColorStop(1,    hexToRgba(state.orbColor,  0.88))
-
-  ctx.shadowBlur  = 10
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 1
-
-  // Curved spine via quadratic bezier: control point offset by wave
-  const cpX = tailX + (tipX - tailX) * 0.55
+  ctx.fillStyle   = glowGrad
   ctx.beginPath()
   ctx.moveTo(tailX, orbY)
-  ctx.quadraticCurveTo(cpX, orbY + wave - halfH, tipX, orbY - halfH)
-  ctx.lineTo(tipX, orbY + halfH)
-  ctx.quadraticCurveTo(cpX, orbY + wave + halfH, tailX, orbY)
+  ctx.bezierCurveTo(
+    tailX + (tipX - tailX) * 0.4, orbY - halfH * 2.2,
+    tipX - 6,                      orbY - halfH * 2.2,
+    tipX,                          orbY
+  )
+  ctx.bezierCurveTo(
+    tipX - 6,                      orbY + halfH * 2.2,
+    tailX + (tipX - tailX) * 0.4, orbY + halfH * 2.2,
+    tailX,                         orbY
+  )
   ctx.closePath()
-  ctx.fillStyle = streakGrad
   ctx.fill()
 
-  // Bright spine centre line
-  ctx.strokeStyle = hexToRgba(state.orbColor, 0.55 + pulse * 0.25)
-  ctx.lineWidth   = 0.9
-  ctx.lineCap     = 'round'
-  ctx.shadowBlur  = 6
+  // Inner neon core (tighter teardrop)
+  const coreGrad = ctx.createLinearGradient(tailX, orbY, tipX, orbY)
+  coreGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
+  coreGrad.addColorStop(0.55, hexToRgba(state.orbTrail, 0.50 + pulse * 0.15))
+  coreGrad.addColorStop(0.88, hexToRgba(state.orbTrail, 0.80))
+  coreGrad.addColorStop(1,    hexToRgba(state.orbColor,  0.95))
+
+  ctx.shadowBlur  = 8
+  ctx.fillStyle   = coreGrad
   ctx.beginPath()
   ctx.moveTo(tailX, orbY)
-  ctx.quadraticCurveTo(cpX, orbY + wave, tipX, orbY)
-  ctx.stroke()
+  ctx.bezierCurveTo(
+    tailX + (tipX - tailX) * 0.45, orbY - halfH,
+    tipX - 4,                       orbY - halfH,
+    tipX,                           orbY
+  )
+  ctx.bezierCurveTo(
+    tipX - 4,                       orbY + halfH,
+    tailX + (tipX - tailX) * 0.45, orbY + halfH,
+    tailX,                          orbY
+  )
+  ctx.closePath()
+  ctx.fill()
 
-  // ── 3. Arc wings ─────────────────────────────────────────────────────────
-  // Two short elliptical arcs that mirror the orbit-ring design language.
-  // They splay above and below the streak, fading toward the tail.
-  const arcR     = ORB_RADIUS + 4            // matches drawOrbRing's ringR
-  const arcAlpha = 0.32 + pulse * 0.14
-  const wingLen  = 44                        // px the arcs span horizontally
-
-  ctx.strokeStyle = hexToRgba(state.orbGlow, arcAlpha)
-  ctx.lineWidth   = 1.1
-  ctx.shadowBlur  = 8
-  ctx.shadowColor = state.orbGlow
-
-  // Upper arc wing
-  ctx.save()
-  ctx.translate(tipX - wingLen * 0.5, orbY)
-  ctx.scale(wingLen / (arcR * 2), 1)
-  const gradUpper = ctx.createLinearGradient(-arcR, 0, arcR, 0)
-  gradUpper.addColorStop(0,   hexToRgba(state.orbGlow, 0))
-  gradUpper.addColorStop(0.5, hexToRgba(state.orbGlow, arcAlpha))
-  gradUpper.addColorStop(1,   hexToRgba(state.orbGlow, arcAlpha * 0.6))
-  ctx.strokeStyle = gradUpper
+  // Hot tip spark — small bright circle at the join point
+  const sparkR    = 2.2 + pulse * 0.8
+  const sparkGrad = ctx.createRadialGradient(tipX, orbY, 0, tipX, orbY, sparkR * 2.5)
+  sparkGrad.addColorStop(0,   hexToRgba('#ffffff',       0.90))
+  sparkGrad.addColorStop(0.4, hexToRgba(state.orbColor,  0.70))
+  sparkGrad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
+  ctx.shadowBlur  = 10
+  ctx.fillStyle   = sparkGrad
   ctx.beginPath()
-  ctx.ellipse(0, 0, arcR, arcR * 0.36, 0, Math.PI, Math.PI * 2)  // upper half
-  ctx.stroke()
-  ctx.restore()
+  ctx.arc(tipX, orbY, sparkR * 2.5, 0, Math.PI * 2)
+  ctx.fill()
 
-  // Lower arc wing (mirrored)
-  ctx.save()
-  ctx.translate(tipX - wingLen * 0.5, orbY)
-  ctx.scale(wingLen / (arcR * 2), 1)
-  const gradLower = ctx.createLinearGradient(-arcR, 0, arcR, 0)
-  gradLower.addColorStop(0,   hexToRgba(state.orbGlow, 0))
-  gradLower.addColorStop(0.5, hexToRgba(state.orbGlow, arcAlpha))
-  gradLower.addColorStop(1,   hexToRgba(state.orbGlow, arcAlpha * 0.6))
-  ctx.strokeStyle = gradLower
-  ctx.beginPath()
-  ctx.ellipse(0, 0, arcR, arcR * 0.36, 0, 0, Math.PI)            // lower half
-  ctx.stroke()
-  ctx.restore()
+  // ── 2. Orbital echo arcs ─────────────────────────────────────────────────
+  // Repeat the tilted orbit ellipse from drawOrbRing at three positions left
+  // of the orb, each fainter and more offset. No animation of position —
+  // only opacity breathes. This is a designed motif, not motion history.
+  const ringR   = ORB_RADIUS + 6            // same as drawOrbRing's ringR = 18
+  const tilt    = 0.45                      // same base rotation used by clean_orbit
+  const echoes  = [
+    { offsetX: -10, alpha: 0.28 + pulse * 0.10, scale: 0.92 },
+    { offsetX: -26, alpha: 0.14 + pulse * 0.06, scale: 0.80 },
+    { offsetX: -42, alpha: 0.06 + pulse * 0.03, scale: 0.68 },
+  ]
+
+  ctx.lineWidth   = 1.2
+  ctx.lineCap     = 'round'
+
+  for (const echo of echoes) {
+    const cx = ORB_X + echo.offsetX
+    ctx.save()
+    ctx.translate(cx, orbY)
+    ctx.rotate(tilt)
+    ctx.scale(echo.scale, echo.scale)
+    ctx.strokeStyle = hexToRgba(state.orbGlow, echo.alpha)
+    ctx.shadowBlur  = 6
+    ctx.globalAlpha = 1
+    // Draw only the left-facing half of the ellipse (the trailing arc)
+    ctx.beginPath()
+    ctx.ellipse(0, 0, ringR, ringR * 0.38, 0, Math.PI * 0.35, Math.PI * 1.65)
+    ctx.stroke()
+    ctx.restore()
+  }
 
   ctx.restore()
 }

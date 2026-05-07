@@ -1246,127 +1246,50 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-// ── Orbit wake trail ───────────────────────────────────────────────────────
-// Designed energy effect — not motion history. Two elements:
-//
-//   1. Comet tail  — a teardrop-shaped filled path anchored at the orb's left
-//                    pole, tapering to a point leftward. Hot at the tip, fully
-//                    transparent at the tail. Width pulses slightly with time.
-//
-//   2. Echo arcs   — two to three short arc strokes that repeat the tilted
-//                    orbit ellipse from drawOrbRing, offset leftward at
-//                    increasing distances. Each echoes the ring at a lower
-//                    opacity — like the orb's orbital field dissipating.
+// ── Ghost-chain trail ──────────────────────────────────────────────────────
+// Draws decaying soft circles at each recorded orb position.
+// Ghost circles shrink and fade as they age, creating an organic motion wake
+// that is always attached to the orb, reads in any direction, and never clutters.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
   orbY: number,
   t: number
 ): void {
-  // ── Shared geometry ───────────────────────────────────────────────────────
-  const tipX   = ORB_X - ORB_RADIUS        // left pole of the orb — trail origin
-  const tailX  = tipX - 54                 // where the comet tail ends
+  const points = state.trailPoints
+  if (points.length < 2) return
 
-  const pulse  = 0.5 + 0.5 * Math.sin(t * 2.8)   // 0..1, slow breathe
-  const flipBulge = state.flipProgress * (1 - state.flipProgress) * 4  // 0..1
+  const ts = t * 0.001
+  // Subtle breathe — just enough to feel alive, not distracting
+  const breathe = 0.88 + 0.12 * Math.sin(ts * 3.8)
 
   ctx.save()
   ctx.shadowColor = state.orbGlow
 
-  // ── 1. Comet tail ─────────────────────────────────────────────────────────
-  // Teardrop: starts at tipX with a half-height that pulses slightly,
-  // curves back to a sharp point at tailX. Entirely horizontal silhouette.
-  const halfH = 3.5 + pulse * 1.2 + flipBulge * 3.5  // max ~8 px at flip peak
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i]
+    if (p.alpha < 0.01) continue
 
-  // Outer soft glow pass (wider, very transparent)
-  const glowGrad = ctx.createLinearGradient(tailX, orbY, tipX, orbY)
-  glowGrad.addColorStop(0,   hexToRgba(state.orbGlow, 0))
-  glowGrad.addColorStop(0.7, hexToRgba(state.orbGlow, 0.12 + pulse * 0.08))
-  glowGrad.addColorStop(1,   hexToRgba(state.orbGlow, 0.30))
+    // Ghost shrinks and fades with age
+    const age    = i / points.length           // 0 (fresh) → 1 (oldest)
+    const radius = ORB_RADIUS * (1 - age * 0.72) * breathe
+    const alpha  = p.alpha * (1 - age * 0.55) * breathe
 
-  ctx.shadowBlur  = 16
-  ctx.globalAlpha = 1
-  ctx.fillStyle   = glowGrad
-  ctx.beginPath()
-  ctx.moveTo(tailX, orbY)
-  ctx.bezierCurveTo(
-    tailX + (tipX - tailX) * 0.4, orbY - halfH * 2.2,
-    tipX - 6,                      orbY - halfH * 2.2,
-    tipX,                          orbY
-  )
-  ctx.bezierCurveTo(
-    tipX - 6,                      orbY + halfH * 2.2,
-    tailX + (tipX - tailX) * 0.4, orbY + halfH * 2.2,
-    tailX,                         orbY
-  )
-  ctx.closePath()
-  ctx.fill()
+    // Radial gradient: bright core → transparent edge
+    const grad = ctx.createRadialGradient(
+      ORB_X, p.y, 0,
+      ORB_X, p.y, radius
+    )
+    grad.addColorStop(0,   hexToRgba(state.orbColor,  alpha * 0.55))
+    grad.addColorStop(0.4, hexToRgba(state.orbTrail,  alpha * 0.7))
+    grad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
 
-  // Inner neon core (tighter teardrop)
-  const coreGrad = ctx.createLinearGradient(tailX, orbY, tipX, orbY)
-  coreGrad.addColorStop(0,    hexToRgba(state.orbTrail, 0))
-  coreGrad.addColorStop(0.55, hexToRgba(state.orbTrail, 0.50 + pulse * 0.15))
-  coreGrad.addColorStop(0.88, hexToRgba(state.orbTrail, 0.80))
-  coreGrad.addColorStop(1,    hexToRgba(state.orbColor,  0.95))
-
-  ctx.shadowBlur  = 8
-  ctx.fillStyle   = coreGrad
-  ctx.beginPath()
-  ctx.moveTo(tailX, orbY)
-  ctx.bezierCurveTo(
-    tailX + (tipX - tailX) * 0.45, orbY - halfH,
-    tipX - 4,                       orbY - halfH,
-    tipX,                           orbY
-  )
-  ctx.bezierCurveTo(
-    tipX - 4,                       orbY + halfH,
-    tailX + (tipX - tailX) * 0.45, orbY + halfH,
-    tailX,                          orbY
-  )
-  ctx.closePath()
-  ctx.fill()
-
-  // Hot tip spark — small bright circle at the join point
-  const sparkR    = 2.2 + pulse * 0.8
-  const sparkGrad = ctx.createRadialGradient(tipX, orbY, 0, tipX, orbY, sparkR * 2.5)
-  sparkGrad.addColorStop(0,   hexToRgba('#ffffff',       0.90))
-  sparkGrad.addColorStop(0.4, hexToRgba(state.orbColor,  0.70))
-  sparkGrad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
-  ctx.shadowBlur  = 10
-  ctx.fillStyle   = sparkGrad
-  ctx.beginPath()
-  ctx.arc(tipX, orbY, sparkR * 2.5, 0, Math.PI * 2)
-  ctx.fill()
-
-  // ── 2. Orbital echo arcs ─────────────────────────────────────────────────
-  // Repeat the tilted orbit ellipse from drawOrbRing at three positions left
-  // of the orb, each fainter and more offset. No animation of position —
-  // only opacity breathes. This is a designed motif, not motion history.
-  const ringR   = ORB_RADIUS + 6            // same as drawOrbRing's ringR = 18
-  const tilt    = 0.45                      // same base rotation used by clean_orbit
-  const echoes  = [
-    { offsetX: -10, alpha: 0.28 + pulse * 0.10, scale: 0.92 },
-    { offsetX: -26, alpha: 0.14 + pulse * 0.06, scale: 0.80 },
-    { offsetX: -42, alpha: 0.06 + pulse * 0.03, scale: 0.68 },
-  ]
-
-  ctx.lineWidth   = 1.2
-  ctx.lineCap     = 'round'
-
-  for (const echo of echoes) {
-    const cx = ORB_X + echo.offsetX
-    ctx.save()
-    ctx.translate(cx, orbY)
-    ctx.rotate(tilt)
-    ctx.scale(echo.scale, echo.scale)
-    ctx.strokeStyle = hexToRgba(state.orbGlow, echo.alpha)
-    ctx.shadowBlur  = 6
+    ctx.shadowBlur  = 10 * (1 - age * 0.6)
     ctx.globalAlpha = 1
-    // Draw only the left-facing half of the ellipse (the trailing arc)
+    ctx.fillStyle   = grad
     ctx.beginPath()
-    ctx.ellipse(0, 0, ringR, ringR * 0.38, 0, Math.PI * 0.35, Math.PI * 1.65)
-    ctx.stroke()
-    ctx.restore()
+    ctx.arc(ORB_X, p.y, radius, 0, Math.PI * 2)
+    ctx.fill()
   }
 
   ctx.restore()

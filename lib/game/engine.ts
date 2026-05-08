@@ -434,9 +434,8 @@ export function update(
   const targetFlow = Math.min(state.stats.streak / 15, 1)  // Reduced from 20 for faster escalation
   state.flowIntensity += (targetFlow - state.flowIntensity) * dtCapped * 2.5  // Increased response time
 
-  // Trail — captures distance as orb progresses forward through the world
-  // Trail extends horizontally backward (right-to-left) from current position
-  state.trailPoints.unshift({ x: state.stats.distance, y: orbY, alpha: 1 })
+  // Trail ribbon positions — captured every frame, persist long enough to form arc
+  state.trailPoints.unshift({ x: ORB_X, y: orbY, alpha: 1 })
   if (state.trailPoints.length > 28) state.trailPoints.pop()
   for (const p of state.trailPoints) p.alpha *= 0.88
 
@@ -1247,10 +1246,12 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-// ── Horizontal motion trail ───────────────────────────────────────────────
-// Records the orb's distance as it progresses through the world.
-// Renders as a horizontal ribbon extending backward (right-to-left) from the orb,
-// showing the energy wake left behind as the character moves forward.
+// ── Ribbon trail renderer ─────────────────────────────────────────────────
+// True motion-path ribbon. Builds a continuous 2-D polygon from the recorded
+// orb positions by computing perpendicular normals at each sample point,
+// offsetting left/right edge vertices by the tapered half-width, then filling
+// the strip in one path with a linear gradient along the spine direction.
+// A second, wider glow pass is drawn first for the neon bloom effect.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
@@ -1260,132 +1261,123 @@ function drawTrail(
   const pts = state.trailPoints
   if (pts.length < 3) return
 
-  const currentDist = state.stats.distance
-  
-  // ── Convert distance-based trail to screen space ───────────────────────
-  // Each trail point's x = distance. Convert to screen x-offset from ORB_X.
-  // Newer points (smaller distance delta) are brighter and wider.
-  const trailScreenPts: Array<{ sx: number; sy: number; alpha: number }> = []
-  for (let i = 0; i < pts.length; i++) {
-    const distDelta = currentDist - pts[i].x  // how far behind current position
-    const sx = ORB_X - distDelta * 0.08       // scale distance into screen pixels (adjust 0.08 to tune scale)
-    if (sx < -200) continue                   // cull off-screen left
-    trailScreenPts.push({
-      sx,
-      sy: pts[i].y,
-      alpha: pts[i].alpha
-    })
-  }
-  
-  if (trailScreenPts.length < 2) return
+  // ── Width profile ──────────────────────────────────────────────────────
+  // Half-width at head = ORB_RADIUS * 0.65, tapers to 0 at tail.
+  const headHW = ORB_RADIUS * 0.65   // half-width at index 0 (newest)
+  const n      = pts.length
 
-  const headPt = trailScreenPts[0]
-  const tailPt = trailScreenPts[trailScreenPts.length - 1]
-
-  // ── Compute perpendicular normals for ribbon geometry ──────────────────
-  // Trail is primarily horizontal, so normals point mostly vertical (up/down).
+  // ── Compute smoothed normals ───────────────────────────────────────────
+  // Normal at each point = perpendicular to the direction between neighbours.
+  // Using central differences (forward diff at head, backward at tail).
   const normals: Array<{ nx: number; ny: number }> = []
-  for (let i = 0; i < trailScreenPts.length; i++) {
+  for (let i = 0; i < n; i++) {
     let dx: number, dy: number
     if (i === 0) {
-      dx = trailScreenPts[0].sx - trailScreenPts[1].sx
-      dy = trailScreenPts[0].sy - trailScreenPts[1].sy
-    } else if (i === trailScreenPts.length - 1) {
-      const prev = trailScreenPts[trailScreenPts.length - 2]
-      dx = prev.sx - trailScreenPts[i].sx
-      dy = prev.sy - trailScreenPts[i].sy
+      dx = pts[0].x - pts[1].x
+      dy = pts[0].y - pts[1].y
+    } else if (i === n - 1) {
+      dx = pts[n - 2].x - pts[n - 1].x
+      dy = pts[n - 2].y - pts[n - 1].y
     } else {
-      dx = trailScreenPts[i - 1].sx - trailScreenPts[i + 1].sx
-      dy = trailScreenPts[i - 1].sy - trailScreenPts[i + 1].sy
+      dx = pts[i - 1].x - pts[i + 1].x
+      dy = pts[i - 1].y - pts[i + 1].y
     }
     const len = Math.sqrt(dx * dx + dy * dy) || 1
+    // Perpendicular: rotate 90°
     normals.push({ nx: -dy / len, ny: dx / len })
   }
 
-  // ── Build left/right edge vertices ─────────────────────────────────────
-  // i=0 is head (current position, bright), i=n-1 is tail (fades to point).
-  const halfWidthHead = 8  // full width at orb
+  // ── Build left / right edge arrays ───────────────────────────────────
+  // i=0 is head (attached to orb), i=n-1 is tail (needle point).
   const leftX:  number[] = []
   const leftY:  number[] = []
   const rightX: number[] = []
   const rightY: number[] = []
 
-  for (let i = 0; i < trailScreenPts.length; i++) {
-    const t01 = i / (trailScreenPts.length - 1)
-    const taper = 1 - t01 * t01  // ease-out quad taper
-    const hw = halfWidthHead * taper * trailScreenPts[i].alpha
+  for (let i = 0; i < n; i++) {
+    const t01 = i / (n - 1)           // 0 at head → 1 at tail
+    // Smooth taper: ease-out quad so the middle is still substantial
+    const taper = 1 - t01 * t01
+    const hw    = headHW * taper
     const { nx, ny } = normals[i]
-    leftX.push(trailScreenPts[i].sx + nx * hw)
-    leftY.push(trailScreenPts[i].sy + ny * hw)
-    rightX.push(trailScreenPts[i].sx - nx * hw)
-    rightY.push(trailScreenPts[i].sy - ny * hw)
+    leftX.push(pts[i].x + nx * hw)
+    leftY.push(pts[i].y + ny * hw)
+    rightX.push(pts[i].x - nx * hw)
+    rightY.push(pts[i].y - ny * hw)
   }
 
-  // ── Gradient along spine ──────────────────────────────────────────────
-  const spineGrad = ctx.createLinearGradient(headPt.sx, headPt.sy, tailPt.sx, tailPt.sy)
+  // ── Gradient along the head→tail spine direction ───────────────────────
+  // We use the actual head and tail positions for the gradient endpoints.
+  const headX = pts[0].x
+  const headY = pts[0].y
+  const tailX = pts[n - 1].x
+  const tailY = pts[n - 1].y
+
+  // ── Helper: draw one ribbon pass ──────────────────────────────────────
+  function drawRibbonPass(
+    lx: number[], ly: number[],
+    rx: number[], ry: number[],
+    gradient: CanvasGradient
+  ) {
+    ctx.beginPath()
+    // Forward along left edge (head → tail)
+    ctx.moveTo(lx[0], ly[0])
+    for (let i = 1; i < n; i++) ctx.lineTo(lx[i], ly[i])
+    // Back along right edge (tail → head)
+    for (let i = n - 1; i >= 0; i--) ctx.lineTo(rx[i], ry[i])
+    ctx.closePath()
+    ctx.fillStyle = gradient
+    ctx.fill()
+  }
 
   ctx.save()
 
-  // ── Pass 1: Ambient bloom ─────────────────────────────────────────────
-  const glowScale = 2.2
-  const gloomLX = leftX.map((x, i) => x + normals[i].nx * (halfWidthHead * (1 - (i / trailScreenPts.length) ** 2) * glowScale))
-  const gloomLY = leftY.map((y, i) => y + normals[i].ny * (halfWidthHead * (1 - (i / trailScreenPts.length) ** 2) * glowScale))
-  const gloomRX = rightX.map((x, i) => x - normals[i].nx * (halfWidthHead * (1 - (i / trailScreenPts.length) ** 2) * glowScale))
-  const gloomRY = rightY.map((y, i) => y - normals[i].ny * (halfWidthHead * (1 - (i / trailScreenPts.length) ** 2) * glowScale))
+  // ── Pass 1: Outer glow bloom (wider offsets) ───────────────────────────
+  const glowScale = 2.4
+  const gloomLX = leftX.map((x, i) => pts[i].x + normals[i].nx * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
+  const gloomLY = leftY.map((y, i) => pts[i].y + normals[i].ny * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
+  const gloomRX = rightX.map((x, i) => pts[i].x - normals[i].nx * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
+  const gloomRY = rightY.map((y, i) => pts[i].y - normals[i].ny * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
 
-  const glowGrad = ctx.createLinearGradient(headPt.sx, headPt.sy, tailPt.sx, tailPt.sy)
+  const glowGrad = ctx.createLinearGradient(headX, headY, tailX, tailY)
   glowGrad.addColorStop(0,    hexToRgba(state.orbGlow, 0.35))
-  glowGrad.addColorStop(0.35, hexToRgba(state.orbGlow, 0.15))
+  glowGrad.addColorStop(0.35, hexToRgba(state.orbGlow, 0.18))
   glowGrad.addColorStop(1,    hexToRgba(state.orbGlow, 0))
 
-  ctx.shadowBlur  = 16
+  ctx.shadowBlur  = 18
   ctx.shadowColor = state.orbGlow
   ctx.globalAlpha = 1
-  ctx.fillStyle   = glowGrad
-  ctx.beginPath()
-  ctx.moveTo(gloomLX[0], gloomLY[0])
-  for (let i = 1; i < gloomLX.length; i++) ctx.lineTo(gloomLX[i], gloomLY[i])
-  for (let i = gloomRX.length - 1; i >= 0; i--) ctx.lineTo(gloomRX[i], gloomRY[i])
-  ctx.closePath()
-  ctx.fill()
+  drawRibbonPass(gloomLX, gloomLY, gloomRX, gloomRY, glowGrad)
 
-  // ── Pass 2: Core neon ribbon ──────────────────────────────────────────
-  const coreGrad = ctx.createLinearGradient(headPt.sx, headPt.sy, tailPt.sx, tailPt.sy)
+  // ── Pass 2: Core neon ribbon ───────────────────────────────────────────
+  const coreGrad = ctx.createLinearGradient(headX, headY, tailX, tailY)
   coreGrad.addColorStop(0,    hexToRgba(state.orbColor,  0.92))
-  coreGrad.addColorStop(0.15, hexToRgba(state.orbTrail,  0.78))
-  coreGrad.addColorStop(0.5,  hexToRgba(state.orbTrail,  0.38))
+  coreGrad.addColorStop(0.15, hexToRgba(state.orbTrail,  0.80))
+  coreGrad.addColorStop(0.55, hexToRgba(state.orbTrail,  0.38))
   coreGrad.addColorStop(1,    hexToRgba(state.orbTrail,  0))
 
   ctx.shadowBlur  = 8
-  ctx.fillStyle   = coreGrad
-  ctx.beginPath()
-  ctx.moveTo(leftX[0], leftY[0])
-  for (let i = 1; i < leftX.length; i++) ctx.lineTo(leftX[i], leftY[i])
-  for (let i = rightX.length - 1; i >= 0; i--) ctx.lineTo(rightX[i], rightY[i])
-  ctx.closePath()
-  ctx.fill()
+  ctx.shadowColor = state.orbGlow
+  drawRibbonPass(leftX, leftY, rightX, rightY, coreGrad)
 
-  // ── Pass 3: Bright spine line ────────────────────────────────────────
-  const spineStrokeGrad = ctx.createLinearGradient(headPt.sx, headPt.sy, tailPt.sx, tailPt.sy)
-  spineStrokeGrad.addColorStop(0,    hexToRgba(state.orbColor, 0.85))
-  spineStrokeGrad.addColorStop(0.3,  hexToRgba(state.orbColor, 0.45))
-  spineStrokeGrad.addColorStop(1,    hexToRgba(state.orbColor, 0))
+  // ── Pass 3: Bright spine centre line ──────────────────────────────────
+  const spineGrad = ctx.createLinearGradient(headX, headY, tailX, tailY)
+  spineGrad.addColorStop(0,    hexToRgba(state.orbColor, 0.90))
+  spineGrad.addColorStop(0.25, hexToRgba(state.orbColor, 0.50))
+  spineGrad.addColorStop(1,    hexToRgba(state.orbColor, 0))
 
   ctx.shadowBlur  = 5
-  ctx.strokeStyle = spineStrokeGrad
+  ctx.strokeStyle = spineGrad
   ctx.lineWidth   = 1.0
   ctx.lineCap     = 'round'
   ctx.lineJoin    = 'round'
   ctx.beginPath()
-  ctx.moveTo(trailScreenPts[0].sx, trailScreenPts[0].sy)
-  for (let i = 1; i < trailScreenPts.length; i++) {
-    ctx.lineTo(trailScreenPts[i].sx, trailScreenPts[i].sy)
-  }
+  ctx.moveTo(pts[0].x, pts[0].y)
+  for (let i = 1; i < n; i++) ctx.lineTo(pts[i].x, pts[i].y)
   ctx.stroke()
 
   ctx.restore()
 }
-
 
 function drawOrb(
   ctx: CanvasRenderingContext2D,

@@ -434,10 +434,17 @@ export function update(
   const targetFlow = Math.min(state.stats.streak / 15, 1)  // Reduced from 20 for faster escalation
   state.flowIntensity += (targetFlow - state.flowIntensity) * dtCapped * 2.5  // Increased response time
 
-  // Trail
+  // Trail ribbon points — scroll leftward with world speed so the trail
+  // paints horizontally behind the orb. Head is always at ORB_X; older
+  // points drift left at the same rate as obstacles, making the ribbon
+  // appear stationary in world-space and trailing behind the orb.
+  for (const p of state.trailPoints) {
+    p.x -= state.speed * dtCapped
+    p.alpha *= 0.92  // slower fade — ribbon is longer-lived now
+  }
   state.trailPoints.unshift({ x: ORB_X, y: orbY, alpha: 1 })
-  if (state.trailPoints.length > 22) state.trailPoints.pop()
-  for (const p of state.trailPoints) p.alpha *= 0.84
+  if (state.trailPoints.length > 28) state.trailPoints.pop()
+  state.trailPoints = state.trailPoints.filter(p => p.x > -40 && p.alpha > 0.02)
 
   // Particles
   for (const p of state.particles) {
@@ -680,12 +687,9 @@ export function render(
     else drawPhaseCore(ctx, pu, t, state.biome)
   }
 
-  // Orb trail
-  drawTrail(ctx, state)
-
-  // Vertical follow line
+  // Orb trail (horizontal neon energy streak)
   const orbY = getOrbY(state)
-  drawFollowLine(ctx, state, orbY)
+  drawTrail(ctx, state, orbY, t)
 
   // Orb
   drawOrb(ctx, orbY, state, t)
@@ -1249,24 +1253,129 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
+// ── Ghost-chain trail ──────────────────────────────────────────────────────
+// Draws decaying soft circles at each recorded orb position.
+// Ghost circles shrink and fade as they age, creating an organic motion wake
+// that is always attached to the orb, reads in any direction, and never clutters.
+// ── Ribbon trail ───────────────────────────────────────────────────────────
+// True ribbon trail: connects the historical X/Y positions the orb occupied
+// over recent frames into a single fluid polygon. The ribbon tapers from the
+// orb radius at the head down to a sharp needle point at the tail, with
+// alpha fading from 1.0 → 0.0 along its length. This produces a smooth
+// "S" curve sweep during flips (since the orb's Y changes while X stays put).
+//
+// Geometry: for each path point we compute the perpendicular to the local
+// tangent direction, offset by ±halfWidth, producing left/right edges. The
+// polygon between those edges is filled as one continuous shape with a
+// linear gradient for the head→tail color/alpha falloff.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
-  state: EngineState
+  state: EngineState,
+  orbY: number,
+  t: number
 ): void {
-  for (let i = state.trailPoints.length - 1; i >= 1; i--) {
-    const p0 = state.trailPoints[i]
-    const p1 = state.trailPoints[i - 1]
-    ctx.strokeStyle = state.orbTrail
-    ctx.globalAlpha = p0.alpha * 0.6
-    ctx.lineWidth = (1 - i / state.trailPoints.length) * ORB_RADIUS * 1.2
-    ctx.shadowBlur = 6
-    ctx.shadowColor = state.orbGlow
-    ctx.beginPath()
-    ctx.moveTo(p0.x, p0.y)
-    ctx.lineTo(p1.x, p1.y)
-    ctx.stroke()
+  const points = state.trailPoints
+  if (points.length < 2) return
+
+  // Build ordered path: head (live orb position) → tail (oldest recorded).
+  // Using the live orbY for the head gives sub-frame smoothness during flips.
+  const path: Array<{ x: number; y: number }> = []
+  path.push({ x: ORB_X, y: orbY })
+  for (let i = 0; i < points.length; i++) {
+    path.push({ x: points[i].x, y: points[i].y })
   }
+
+  const N = path.length
+  if (N < 2) return
+
+  const ts = t * 0.001
+  const breathe = 0.92 + 0.08 * Math.sin(ts * 3.8)
+  const headRadius = ORB_RADIUS * 0.95 * breathe
+
+  // Compute perpendicular offsets for each point → two edges (left/right).
+  // Width tapers from headRadius at index 0 to 0 at the last index.
+  const leftEdge: Array<{ x: number; y: number }> = new Array(N)
+  const rightEdge: Array<{ x: number; y: number }> = new Array(N)
+
+  for (let i = 0; i < N; i++) {
+    // Tangent: average of neighboring segment directions for smoothness
+    let tx = 0
+    let ty = 0
+    if (i > 0) {
+      tx += path[i].x - path[i - 1].x
+      ty += path[i].y - path[i - 1].y
+    }
+    if (i < N - 1) {
+      tx += path[i + 1].x - path[i].x
+      ty += path[i + 1].y - path[i].y
+    }
+    const len = Math.hypot(tx, ty)
+    if (len < 0.0001) {
+      tx = 1
+      ty = 0
+    } else {
+      tx /= len
+      ty /= len
+    }
+    // Perpendicular (rotate 90°): (-ty, tx)
+    const px = -ty
+    const py = tx
+
+    // Curved taper — stays thick near head, sharpens to a point at tail.
+    const ageT = i / (N - 1)              // 0 = head, 1 = tail
+    const taper = Math.pow(1 - ageT, 1.4)
+    const halfW = headRadius * taper
+
+    leftEdge[i]  = { x: path[i].x + px * halfW, y: path[i].y + py * halfW }
+    rightEdge[i] = { x: path[i].x - px * halfW, y: path[i].y - py * halfW }
+  }
+
+  ctx.save()
+
+  // Gradient runs along the ribbon's overall axis (head → tail) so the
+  // alpha/color falloff aligns with the curve.
+  const head = path[0]
+  const tail = path[N - 1]
+  const grad = ctx.createLinearGradient(head.x, head.y, tail.x, tail.y)
+  grad.addColorStop(0.0,  hexToRgba('#ffffff',        0.95))
+  grad.addColorStop(0.08, hexToRgba(state.orbColor,   0.85))
+  grad.addColorStop(0.35, hexToRgba(state.orbTrail,   0.55))
+  grad.addColorStop(0.7,  hexToRgba(state.orbGlow,    0.2))
+  grad.addColorStop(1.0,  hexToRgba(state.orbGlow,    0))
+
+  // Build closed polygon: forward along left edge, around tail tip,
+  // back along right edge. Quadratic curves between midpoints smooth out
+  // segment joins so the silhouette looks like one fluid stroke.
+  ctx.beginPath()
+  ctx.moveTo(leftEdge[0].x, leftEdge[0].y)
+  for (let i = 1; i < N - 1; i++) {
+    const midX = (leftEdge[i].x + leftEdge[i + 1].x) * 0.5
+    const midY = (leftEdge[i].y + leftEdge[i + 1].y) * 0.5
+    ctx.quadraticCurveTo(leftEdge[i].x, leftEdge[i].y, midX, midY)
+  }
+  ctx.lineTo(leftEdge[N - 1].x, leftEdge[N - 1].y)
+  ctx.lineTo(rightEdge[N - 1].x, rightEdge[N - 1].y)
+  for (let i = N - 2; i > 0; i--) {
+    const midX = (rightEdge[i].x + rightEdge[i - 1].x) * 0.5
+    const midY = (rightEdge[i].y + rightEdge[i - 1].y) * 0.5
+    ctx.quadraticCurveTo(rightEdge[i].x, rightEdge[i].y, midX, midY)
+  }
+  ctx.lineTo(rightEdge[0].x, rightEdge[0].y)
+  ctx.closePath()
+
+  // Outer soft glow pass — wider blur, lower alpha
+  ctx.shadowBlur = 14
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 0.55
+  ctx.fillStyle = grad
+  ctx.fill()
+
+  // Sharp core pass — same polygon, full alpha, tighter glow
+  ctx.shadowBlur = 6
   ctx.globalAlpha = 1
+  ctx.fill()
+
+  ctx.restore()
 }
 
 function drawOrb(
@@ -1580,43 +1689,5 @@ function hexToRgba(hex: string, alpha: number): string {
   return hex
 }
 
-// Draws the vertical neon follow line that trails behind the orb's vertical movement
-function drawFollowLine(ctx: CanvasRenderingContext2D, state: EngineState, orbY: number): void {
-  const currentY = orbY
-  const smoothing = 0.12 // Easing factor for smooth follow with elasticity
-  
-  // Update follow line position with easing (creates lag/trail effect)
-  state.followLineY += (currentY - state.followLineY) * smoothing
-  
-  // Draw vertical neon line from top thread to bottom thread
-  const topY = THREAD_Y - ORB_OFFSET_Y
-  const bottomY = THREAD_Y + ORB_OFFSET_Y
-  
-  // Main line - glowing neon effect
-  ctx.strokeStyle = state.orbGlow
-  ctx.lineWidth = 2
-  ctx.lineCap = 'round'
-  ctx.shadowBlur = 20
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 0.6
-  
-  ctx.beginPath()
-  ctx.moveTo(ORB_X, topY)
-  ctx.lineTo(ORB_X, bottomY)
-  ctx.stroke()
-  
-  // Inner bright core line
-  ctx.strokeStyle = '#ffffff'
-  ctx.lineWidth = 0.8
-  ctx.shadowBlur = 8
-  ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 0.4
-  
-  ctx.beginPath()
-  ctx.moveTo(ORB_X, topY)
-  ctx.lineTo(ORB_X, bottomY)
-  ctx.stroke()
-  
-  ctx.globalAlpha = 1
-}
+
 

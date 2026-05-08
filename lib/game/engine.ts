@@ -434,10 +434,10 @@ export function update(
   const targetFlow = Math.min(state.stats.streak / 15, 1)  // Reduced from 20 for faster escalation
   state.flowIntensity += (targetFlow - state.flowIntensity) * dtCapped * 2.5  // Increased response time
 
-  // Trail ribbon positions — captured every frame, persist long enough to form arc
+  // Trail ghost positions — captured every frame, fade over time
   state.trailPoints.unshift({ x: ORB_X, y: orbY, alpha: 1 })
-  if (state.trailPoints.length > 28) state.trailPoints.pop()
-  for (const p of state.trailPoints) p.alpha *= 0.88
+  if (state.trailPoints.length > 16) state.trailPoints.pop()
+  for (const p of state.trailPoints) p.alpha *= 0.78
 
   // Particles
   for (const p of state.particles) {
@@ -1246,135 +1246,51 @@ function drawShieldAura(
   ctx.globalAlpha = 1
 }
 
-// ── Ribbon trail renderer ─────────────────────────────────────────────────
-// True motion-path ribbon. Builds a continuous 2-D polygon from the recorded
-// orb positions by computing perpendicular normals at each sample point,
-// offsetting left/right edge vertices by the tapered half-width, then filling
-// the strip in one path with a linear gradient along the spine direction.
-// A second, wider glow pass is drawn first for the neon bloom effect.
+// ── Ghost-chain trail ──────────────────────────────────────────────────────
+// Draws decaying soft circles at each recorded orb position.
+// Ghost circles shrink and fade as they age, creating an organic motion wake
+// that is always attached to the orb, reads in any direction, and never clutters.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
   orbY: number,
   t: number
 ): void {
-  const pts = state.trailPoints
-  if (pts.length < 3) return
+  const points = state.trailPoints
+  if (points.length < 2) return
 
-  // ── Width profile ──────────────────────────────────────────────────────
-  // Half-width at head = ORB_RADIUS * 0.65, tapers to 0 at tail.
-  const headHW = ORB_RADIUS * 0.65   // half-width at index 0 (newest)
-  const n      = pts.length
-
-  // ── Compute smoothed normals ───────────────────────────────────────────
-  // Normal at each point = perpendicular to the direction between neighbours.
-  // Using central differences (forward diff at head, backward at tail).
-  const normals: Array<{ nx: number; ny: number }> = []
-  for (let i = 0; i < n; i++) {
-    let dx: number, dy: number
-    if (i === 0) {
-      dx = pts[0].x - pts[1].x
-      dy = pts[0].y - pts[1].y
-    } else if (i === n - 1) {
-      dx = pts[n - 2].x - pts[n - 1].x
-      dy = pts[n - 2].y - pts[n - 1].y
-    } else {
-      dx = pts[i - 1].x - pts[i + 1].x
-      dy = pts[i - 1].y - pts[i + 1].y
-    }
-    const len = Math.sqrt(dx * dx + dy * dy) || 1
-    // Perpendicular: rotate 90°
-    normals.push({ nx: -dy / len, ny: dx / len })
-  }
-
-  // ── Build left / right edge arrays ───────────────────────────────────
-  // i=0 is head (attached to orb), i=n-1 is tail (needle point).
-  const leftX:  number[] = []
-  const leftY:  number[] = []
-  const rightX: number[] = []
-  const rightY: number[] = []
-
-  for (let i = 0; i < n; i++) {
-    const t01 = i / (n - 1)           // 0 at head → 1 at tail
-    // Smooth taper: ease-out quad so the middle is still substantial
-    const taper = 1 - t01 * t01
-    const hw    = headHW * taper
-    const { nx, ny } = normals[i]
-    leftX.push(pts[i].x + nx * hw)
-    leftY.push(pts[i].y + ny * hw)
-    rightX.push(pts[i].x - nx * hw)
-    rightY.push(pts[i].y - ny * hw)
-  }
-
-  // ── Gradient along the head→tail spine direction ───────────────────────
-  // We use the actual head and tail positions for the gradient endpoints.
-  const headX = pts[0].x
-  const headY = pts[0].y
-  const tailX = pts[n - 1].x
-  const tailY = pts[n - 1].y
-
-  // ── Helper: draw one ribbon pass ──────────────────────────────────────
-  function drawRibbonPass(
-    lx: number[], ly: number[],
-    rx: number[], ry: number[],
-    gradient: CanvasGradient
-  ) {
-    ctx.beginPath()
-    // Forward along left edge (head → tail)
-    ctx.moveTo(lx[0], ly[0])
-    for (let i = 1; i < n; i++) ctx.lineTo(lx[i], ly[i])
-    // Back along right edge (tail → head)
-    for (let i = n - 1; i >= 0; i--) ctx.lineTo(rx[i], ry[i])
-    ctx.closePath()
-    ctx.fillStyle = gradient
-    ctx.fill()
-  }
+  const ts = t * 0.001
+  // Subtle breathe — just enough to feel alive, not distracting
+  const breathe = 0.88 + 0.12 * Math.sin(ts * 3.8)
 
   ctx.save()
-
-  // ── Pass 1: Outer glow bloom (wider offsets) ───────────────────────────
-  const glowScale = 2.4
-  const gloomLX = leftX.map((x, i) => pts[i].x + normals[i].nx * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
-  const gloomLY = leftY.map((y, i) => pts[i].y + normals[i].ny * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
-  const gloomRX = rightX.map((x, i) => pts[i].x - normals[i].nx * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
-  const gloomRY = rightY.map((y, i) => pts[i].y - normals[i].ny * headHW * glowScale * (1 - (i / (n - 1)) ** 2))
-
-  const glowGrad = ctx.createLinearGradient(headX, headY, tailX, tailY)
-  glowGrad.addColorStop(0,    hexToRgba(state.orbGlow, 0.35))
-  glowGrad.addColorStop(0.35, hexToRgba(state.orbGlow, 0.18))
-  glowGrad.addColorStop(1,    hexToRgba(state.orbGlow, 0))
-
-  ctx.shadowBlur  = 18
   ctx.shadowColor = state.orbGlow
-  ctx.globalAlpha = 1
-  drawRibbonPass(gloomLX, gloomLY, gloomRX, gloomRY, glowGrad)
 
-  // ── Pass 2: Core neon ribbon ───────────────────────────────────────────
-  const coreGrad = ctx.createLinearGradient(headX, headY, tailX, tailY)
-  coreGrad.addColorStop(0,    hexToRgba(state.orbColor,  0.92))
-  coreGrad.addColorStop(0.15, hexToRgba(state.orbTrail,  0.80))
-  coreGrad.addColorStop(0.55, hexToRgba(state.orbTrail,  0.38))
-  coreGrad.addColorStop(1,    hexToRgba(state.orbTrail,  0))
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i]
+    if (p.alpha < 0.01) continue
 
-  ctx.shadowBlur  = 8
-  ctx.shadowColor = state.orbGlow
-  drawRibbonPass(leftX, leftY, rightX, rightY, coreGrad)
+    // Ghost shrinks and fades with age
+    const age    = i / points.length           // 0 (fresh) → 1 (oldest)
+    const radius = ORB_RADIUS * (1 - age * 0.72) * breathe
+    const alpha  = p.alpha * (1 - age * 0.55) * breathe
 
-  // ── Pass 3: Bright spine centre line ──────────────────────────────────
-  const spineGrad = ctx.createLinearGradient(headX, headY, tailX, tailY)
-  spineGrad.addColorStop(0,    hexToRgba(state.orbColor, 0.90))
-  spineGrad.addColorStop(0.25, hexToRgba(state.orbColor, 0.50))
-  spineGrad.addColorStop(1,    hexToRgba(state.orbColor, 0))
+    // Radial gradient: bright core → transparent edge
+    const grad = ctx.createRadialGradient(
+      ORB_X, p.y, 0,
+      ORB_X, p.y, radius
+    )
+    grad.addColorStop(0,   hexToRgba(state.orbColor,  alpha * 0.55))
+    grad.addColorStop(0.4, hexToRgba(state.orbTrail,  alpha * 0.7))
+    grad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
 
-  ctx.shadowBlur  = 5
-  ctx.strokeStyle = spineGrad
-  ctx.lineWidth   = 1.0
-  ctx.lineCap     = 'round'
-  ctx.lineJoin    = 'round'
-  ctx.beginPath()
-  ctx.moveTo(pts[0].x, pts[0].y)
-  for (let i = 1; i < n; i++) ctx.lineTo(pts[i].x, pts[i].y)
-  ctx.stroke()
+    ctx.shadowBlur  = 10 * (1 - age * 0.6)
+    ctx.globalAlpha = 1
+    ctx.fillStyle   = grad
+    ctx.beginPath()
+    ctx.arc(ORB_X, p.y, radius, 0, Math.PI * 2)
+    ctx.fill()
+  }
 
   ctx.restore()
 }

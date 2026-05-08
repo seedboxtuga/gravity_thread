@@ -232,9 +232,7 @@ export default function HomeScreen({
                 <button
                   key={mode}
                   onClick={() => setSelectedMode(mode)}
-                  className={`flex-1 py-2.5 rounded-lg transition-all active:scale-95 text-center font-bold font-mono ${
-                    mode === 'practice' ? 'px-0.5' : 'px-1'
-                  }`}
+                  className="flex-1 py-2.5 px-1 rounded-lg transition-all active:scale-95 text-center text-xs font-bold font-mono"
                   style={{
                     background: isSelected 
                       ? `${cfg.color}18` 
@@ -248,14 +246,7 @@ export default function HomeScreen({
                 >
                   <div className="flex flex-col items-center gap-1">
                     <span className="text-base leading-none">{icon}</span>
-                    <span 
-                      className="uppercase leading-none block text-[10px] tracking-wide origin-center"
-                      style={{
-                        transform: mode === 'practice' ? 'scale(0.72)' : 'scale(0.82)',
-                      }}
-                    >
-                      {cfg.label}
-                    </span>
+                    <span className="text-[8px] uppercase tracking-wider leading-none">{cfg.label}</span>
                   </div>
                 </button>
               )

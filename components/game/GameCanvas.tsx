@@ -334,23 +334,6 @@ export default function GameCanvas({
               )}
             </div>
 
-            {/* Practice Mode Indicator */}
-            {mode === 'practice' && (
-              <div className="absolute top-5 left-1/2 -translate-x-1/2 pointer-events-none z-10">
-                <div
-                  className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold tracking-widest uppercase whitespace-nowrap"
-                  style={{
-                    color: '#4ade80',
-                    background: 'rgba(74,222,128,0.12)',
-                    border: '1px solid rgba(74,222,128,0.35)',
-                    boxShadow: '0 0 12px rgba(74,222,128,0.15)',
-                  }}
-                >
-                  Practice
-                </div>
-              </div>
-            )}
-
             {/* Utility buttons (right) — volume + pause */}
             <div className="flex gap-2 pointer-events-auto">
               {/* Volume toggle */}

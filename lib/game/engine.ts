@@ -434,10 +434,17 @@ export function update(
   const targetFlow = Math.min(state.stats.streak / 15, 1)  // Reduced from 20 for faster escalation
   state.flowIntensity += (targetFlow - state.flowIntensity) * dtCapped * 2.5  // Increased response time
 
-  // Trail ghost positions — captured every frame, fade over time
+  // Trail ribbon points — scroll leftward with world speed so the trail
+  // paints horizontally behind the orb. Head is always at ORB_X; older
+  // points drift left at the same rate as obstacles, making the ribbon
+  // appear stationary in world-space and trailing behind the orb.
+  for (const p of state.trailPoints) {
+    p.x -= state.speed * dtCapped
+    p.alpha *= 0.92  // slower fade — ribbon is longer-lived now
+  }
   state.trailPoints.unshift({ x: ORB_X, y: orbY, alpha: 1 })
-  if (state.trailPoints.length > 16) state.trailPoints.pop()
-  for (const p of state.trailPoints) p.alpha *= 0.78
+  if (state.trailPoints.length > 28) state.trailPoints.pop()
+  state.trailPoints = state.trailPoints.filter(p => p.x > -40 && p.alpha > 0.02)
 
   // Particles
   for (const p of state.particles) {

@@ -1250,6 +1250,17 @@ function drawShieldAura(
 // Draws decaying soft circles at each recorded orb position.
 // Ghost circles shrink and fade as they age, creating an organic motion wake
 // that is always attached to the orb, reads in any direction, and never clutters.
+// ── Ribbon trail ───────────────────────────────────────────────────────────
+// True ribbon trail: connects the historical X/Y positions the orb occupied
+// over recent frames into a single fluid polygon. The ribbon tapers from the
+// orb radius at the head down to a sharp needle point at the tail, with
+// alpha fading from 1.0 → 0.0 along its length. This produces a smooth
+// "S" curve sweep during flips (since the orb's Y changes while X stays put).
+//
+// Geometry: for each path point we compute the perpendicular to the local
+// tangent direction, offset by ±halfWidth, producing left/right edges. The
+// polygon between those edges is filled as one continuous shape with a
+// linear gradient for the head→tail color/alpha falloff.
 function drawTrail(
   ctx: CanvasRenderingContext2D,
   state: EngineState,
@@ -1259,38 +1270,103 @@ function drawTrail(
   const points = state.trailPoints
   if (points.length < 2) return
 
+  // Build ordered path: head (live orb position) → tail (oldest recorded).
+  // Using the live orbY for the head gives sub-frame smoothness during flips.
+  const path: Array<{ x: number; y: number }> = []
+  path.push({ x: ORB_X, y: orbY })
+  for (let i = 0; i < points.length; i++) {
+    path.push({ x: points[i].x, y: points[i].y })
+  }
+
+  const N = path.length
+  if (N < 2) return
+
   const ts = t * 0.001
-  // Subtle breathe — just enough to feel alive, not distracting
-  const breathe = 0.88 + 0.12 * Math.sin(ts * 3.8)
+  const breathe = 0.92 + 0.08 * Math.sin(ts * 3.8)
+  const headRadius = ORB_RADIUS * 0.95 * breathe
+
+  // Compute perpendicular offsets for each point → two edges (left/right).
+  // Width tapers from headRadius at index 0 to 0 at the last index.
+  const leftEdge: Array<{ x: number; y: number }> = new Array(N)
+  const rightEdge: Array<{ x: number; y: number }> = new Array(N)
+
+  for (let i = 0; i < N; i++) {
+    // Tangent: average of neighboring segment directions for smoothness
+    let tx = 0
+    let ty = 0
+    if (i > 0) {
+      tx += path[i].x - path[i - 1].x
+      ty += path[i].y - path[i - 1].y
+    }
+    if (i < N - 1) {
+      tx += path[i + 1].x - path[i].x
+      ty += path[i + 1].y - path[i].y
+    }
+    const len = Math.hypot(tx, ty)
+    if (len < 0.0001) {
+      tx = 1
+      ty = 0
+    } else {
+      tx /= len
+      ty /= len
+    }
+    // Perpendicular (rotate 90°): (-ty, tx)
+    const px = -ty
+    const py = tx
+
+    // Curved taper — stays thick near head, sharpens to a point at tail.
+    const ageT = i / (N - 1)              // 0 = head, 1 = tail
+    const taper = Math.pow(1 - ageT, 1.4)
+    const halfW = headRadius * taper
+
+    leftEdge[i]  = { x: path[i].x + px * halfW, y: path[i].y + py * halfW }
+    rightEdge[i] = { x: path[i].x - px * halfW, y: path[i].y - py * halfW }
+  }
 
   ctx.save()
-  ctx.shadowColor = state.orbGlow
 
-  for (let i = 1; i < points.length; i++) {
-    const p = points[i]
-    if (p.alpha < 0.01) continue
+  // Gradient runs along the ribbon's overall axis (head → tail) so the
+  // alpha/color falloff aligns with the curve.
+  const head = path[0]
+  const tail = path[N - 1]
+  const grad = ctx.createLinearGradient(head.x, head.y, tail.x, tail.y)
+  grad.addColorStop(0.0,  hexToRgba('#ffffff',        0.95))
+  grad.addColorStop(0.08, hexToRgba(state.orbColor,   0.85))
+  grad.addColorStop(0.35, hexToRgba(state.orbTrail,   0.55))
+  grad.addColorStop(0.7,  hexToRgba(state.orbGlow,    0.2))
+  grad.addColorStop(1.0,  hexToRgba(state.orbGlow,    0))
 
-    // Ghost shrinks and fades with age
-    const age    = i / points.length           // 0 (fresh) → 1 (oldest)
-    const radius = ORB_RADIUS * (1 - age * 0.72) * breathe
-    const alpha  = p.alpha * (1 - age * 0.55) * breathe
-
-    // Radial gradient: bright core → transparent edge
-    const grad = ctx.createRadialGradient(
-      ORB_X, p.y, 0,
-      ORB_X, p.y, radius
-    )
-    grad.addColorStop(0,   hexToRgba(state.orbColor,  alpha * 0.55))
-    grad.addColorStop(0.4, hexToRgba(state.orbTrail,  alpha * 0.7))
-    grad.addColorStop(1,   hexToRgba(state.orbGlow,   0))
-
-    ctx.shadowBlur  = 10 * (1 - age * 0.6)
-    ctx.globalAlpha = 1
-    ctx.fillStyle   = grad
-    ctx.beginPath()
-    ctx.arc(ORB_X, p.y, radius, 0, Math.PI * 2)
-    ctx.fill()
+  // Build closed polygon: forward along left edge, around tail tip,
+  // back along right edge. Quadratic curves between midpoints smooth out
+  // segment joins so the silhouette looks like one fluid stroke.
+  ctx.beginPath()
+  ctx.moveTo(leftEdge[0].x, leftEdge[0].y)
+  for (let i = 1; i < N - 1; i++) {
+    const midX = (leftEdge[i].x + leftEdge[i + 1].x) * 0.5
+    const midY = (leftEdge[i].y + leftEdge[i + 1].y) * 0.5
+    ctx.quadraticCurveTo(leftEdge[i].x, leftEdge[i].y, midX, midY)
   }
+  ctx.lineTo(leftEdge[N - 1].x, leftEdge[N - 1].y)
+  ctx.lineTo(rightEdge[N - 1].x, rightEdge[N - 1].y)
+  for (let i = N - 2; i > 0; i--) {
+    const midX = (rightEdge[i].x + rightEdge[i - 1].x) * 0.5
+    const midY = (rightEdge[i].y + rightEdge[i - 1].y) * 0.5
+    ctx.quadraticCurveTo(rightEdge[i].x, rightEdge[i].y, midX, midY)
+  }
+  ctx.lineTo(rightEdge[0].x, rightEdge[0].y)
+  ctx.closePath()
+
+  // Outer soft glow pass — wider blur, lower alpha
+  ctx.shadowBlur = 14
+  ctx.shadowColor = state.orbGlow
+  ctx.globalAlpha = 0.55
+  ctx.fillStyle = grad
+  ctx.fill()
+
+  // Sharp core pass — same polygon, full alpha, tighter glow
+  ctx.shadowBlur = 6
+  ctx.globalAlpha = 1
+  ctx.fill()
 
   ctx.restore()
 }

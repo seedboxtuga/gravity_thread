@@ -249,12 +249,9 @@ export default function HomeScreen({
                   <div className="flex flex-col items-center gap-1">
                     <span className="text-base leading-none">{icon}</span>
                     <span 
-                      className="uppercase leading-none block"
+                      className="uppercase leading-none block text-[10px] tracking-wide origin-center"
                       style={{
-                        fontSize: mode === 'practice' ? '7px' : '8px',
-                        letterSpacing: mode === 'practice' ? '0.03em' : '0.08em',
-                        WebkitFontSmoothing: 'antialiased',
-                        textRendering: 'geometricPrecision',
+                        transform: mode === 'practice' ? 'scale(0.72)' : 'scale(0.82)',
                       }}
                     >
                       {cfg.label}

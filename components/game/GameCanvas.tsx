@@ -341,9 +341,9 @@ export default function GameCanvas({
                   className="px-3 py-1 rounded-full text-[10px] font-mono font-bold tracking-normal uppercase whitespace-nowrap"
                   style={{
                     color: '#4ade80',
-                    background: 'rgba(74,222,128,0.12)',
-                    border: '1px solid rgba(74,222,128,0.35)',
-                    boxShadow: '0 0 12px rgba(74,222,128,0.15)',
+                    background: 'rgba(74,222,128,0.10)',
+                    border: '1px solid rgba(74,222,128,0.5)',
+                    textShadow: 'none',
                   }}
                 >
                   Practice

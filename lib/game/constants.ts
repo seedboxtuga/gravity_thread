@@ -1,4 +1,4 @@
-import type { GameMode } from './types'
+import type { GameMode, PracticeSpeedLevel, PracticeSpeedConfig, PracticeMasteryMedal } from './types'
 
 export const CANVAS_WIDTH = 390
 export const CANVAS_HEIGHT = 600

@@ -39,6 +39,54 @@ export type GameState = 'idle' | 'playing' | 'paused' | 'dead'
 
 export type GameMode = 'endless' | 'daily' | 'practice' | 'hard'
 
+// Practice Lab speed levels
+export type PracticeSpeedLevel = 
+  | 'beginner' 
+  | 'easy' 
+  | 'normal' 
+  | 'fast' 
+  | 'hard_speed' 
+  | 'extreme' 
+  | 'thread_god'
+
+export type PracticeMasteryMedal = 'none' | 'bronze' | 'silver' | 'gold' | 'perfect'
+
+export type PracticeGrade = 'S' | 'A' | 'B' | 'C' | 'D'
+
+export interface PracticeSpeedConfig {
+  id: PracticeSpeedLevel
+  label: string
+  description: string
+  speedMultiplier: number
+  obstacleMultiplier: number
+  unlockRequirement: {
+    type: 'default' | 'endless_score' | 'mastery'
+    endlessScore?: number
+    masteryLevel?: PracticeSpeedLevel
+    masteryMedal?: PracticeMasteryMedal
+  }
+}
+
+export interface PracticeRunStats {
+  speedLevel: PracticeSpeedLevel
+  timeSurvived: number
+  hits: number
+  cleanDodges: number
+  accuracy: number
+  longestCleanStreak: number
+  currentCleanStreak: number
+  nearMisses: number
+  grade: PracticeGrade
+}
+
+export interface PracticeLevelStats {
+  bestAccuracy: number
+  longestCleanStreak: number
+  fewestHitsIn120s: number | null
+  bestGrade: PracticeGrade | null
+  masteryMedal: PracticeMasteryMedal
+}
+
 // Daily mission types
 export type MissionType =
   | 'survive_distance'
